@@ -7,7 +7,8 @@
 #include <time.h>
 #include <string.h>
 #include "rtmp_types.h"
-//
+#include "streamsegmenter.h"
+
 // NETWORK BYTE ORDER IS BIG ENDIAN; MY SYSTEM IS LITTLE ENDIAN 
 // the backlog argument defines the max length to which the queue of pending connections for sockfd may grow.
 // BASIC HEADER, MESSAGE HEADER, EXTENDED TIMESTAMP, CHUNK DATA
@@ -329,21 +330,17 @@ void parse_audio_msg(int sfd, unsigned char payload[], int size) {
 }
 
 void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int file_number) {
-	char conv[500];
-	sprintf(conv, "output/strmout%i.flv", file_number);
-	FILE* f = fopen(conv, "a");
-
-	char* filename = "streamoutput.flv";
-	FILE* fp = fopen(filename, "a");
-	for (int i = 0; i < size; ++i) {
-		fputc(payload[i], fp);
-		fputc(payload[i], f);
+	int frametype = (payload[0] >> 4) & 255;
+	int codecID = (payload[0] & 255);
+	int avc_packet_type = payload[1];
+	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
+	if (avc_packet_type == 0) {
+		write_init(&(payload[5]), size-5);
 	}
-	// not closing overwrote some bytes in the files
-	// so you basically lost bytes
-	// always to remember to close streams
-	fclose(fp);
-	fclose(f);
+	else {
+		// implement write_segment in streamsegmenter.c
+		// write_segment(&(payload[5]), size-5);
+	}
 }
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
