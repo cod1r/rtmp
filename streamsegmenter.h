@@ -31,3 +31,6 @@ Box write_tkhd();
 Box write_trak();
 Box write_mvhd();
 Box write_moov(unsigned char*, int);
+void write_segment(unsigned char*, int, int);
+void write_playlist(FILE*);
+void append_segment(FILE*, int);

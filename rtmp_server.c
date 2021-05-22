@@ -327,29 +327,64 @@ void parse_usr_msg() {
 }
 
 void parse_audio_msg(int sfd, unsigned char payload[], int size) {
+	// gotta worry about audio sooner or later
 }
 
-void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int file_number) {
+void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* file_number_ptr) {
+	unsigned int file_number = *file_number_ptr;
+	
+	FILE* playlist_file = fopen("index.m3u8", "a");
+	char* segment_name[50000];
+	sprintf(segment_name, "sequence%i.mp4", file_number);
+	FILE* segment_file = fopen(segment_name, "a");
+
 	int frametype = (payload[0] >> 4) & 255;
 	int codecID = (payload[0] & 255);
 	int avc_packet_type = payload[1];
 	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
-	if (avc_packet_type == 0) {
-		write_init(&(payload[5]), size-5);
+
+	if (frametype == 1) {
+		file_number = (*file_number_ptr)++;
+		sprintf(segment_name, "sequence%i.mp4", file_number);
+		segment_file = fopen(segment_name, "a");
+		printf("keyframe, file: %i\n", file_number);
+
+		if (avc_packet_type == 0) {
+			write_init(&(payload[5]), size-5);
+			write_playlist(playlist_file);
+		}
+		else if (avc_packet_type == 1) {
+			write_segment(segment_file, &(payload[5]), size-5, file_number);
+			append_playlist(playlist_file, file_number);
+		}
+		else if (avc_packet_type == 2) {
+			printf("avc packet type 2...we haven't done anything with this yet\n");
+		}
+	}
+	else if (frametype == 2) {
+		printf("interframe, file: %i\n", file_number);
+		append_segment(segment_file, payload + 5, size - 5);
+	}
+	else if (frametype == 3) {
+		printf("disposable interframe, file: %i\n", file_number);
+	}
+	else if (frametype == 4) {
+		printf("generated keyframe, file %i\n", file_number);
+	}
+	else if (frametype == 5) {
+		printf("video/command frame, file %i\n", file_number);
 	}
 	else {
-		// implement write_segment in streamsegmenter.c
-		// write_segment(&(payload[5]), size-5);
+		printf("what the fuck!\n");
+		exit(EXIT_FAILURE);
 	}
+	
+	fclose(playlist_file);
+	fclose(segment_file);
 }
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
-	FILE* fp = fopen("metadata.txt", "a");
-	for (int i = 0; i < size; ++i) {
-		char str[50];
-		sprintf(str, "%i\n", payload[i]);
-		fputs(str, fp);
-	}
+	// do something with metadata or user data
 }
 
 
@@ -362,7 +397,7 @@ void parse_chunk_streams(int sfd) {
 	unsigned int MSG_LENGTH = 0;
 	// this will be our payload buffer
 	// WE ONLY RESET PAYLOAD IF SIZE CHANGES, OTHERWISE WE ONLY HAVE TO RESET THE INDEX TO WHERE WE START INSERTING DATA; I AM ASSUMING THAT WORKS
-	// THE RECV() FUNCTION WILL START INSERTING DATA INTO THE PAYLOAD AT THE SPECIFIED INDEX (BYTES_RECEIVED) AND OVERWRITE ANY BYTES THAT WAS THERE.
+	// THE RECV() FUNCTION WILL START INSERTING DATA INTO THE PAYLOAD AT THE SPECIFIED INDEX (BYTES_RECEIVED) AND OVERWRITE ANY BYTES THAT WERE THERE.
 	unsigned char* payload = NULL;
 	unsigned char MSG_TYPEID = 0;
 	unsigned int CS_ID = 0;
@@ -370,6 +405,7 @@ void parse_chunk_streams(int sfd) {
 	unsigned int TOTAL_BYTES = 0;
 	unsigned int video_bytes = 0;
 	unsigned int file_number = 0;
+	unsigned int samples = 0;
 	while (1) {
 		// used to see the first byte
 		unsigned char first = 0;
@@ -509,7 +545,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else if (MSG_TYPEID == 9) {
 				video_bytes += MSG_LENGTH;
-				parse_video_msg(sfd, payload, MSG_LENGTH, file_number++);
+				parse_video_msg(sfd, payload, MSG_LENGTH, &file_number);
 			}
 			else if (MSG_TYPEID == 18) {
 				parse_data_msg(sfd, payload, MSG_LENGTH);
