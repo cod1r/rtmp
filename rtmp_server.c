@@ -336,7 +336,7 @@ void parse_audio_msg(int sfd, unsigned char payload[], int size) {
 void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* sample_count, SampleData samples[], unsigned int* file_number) {
 
 	int frametype = (payload[0] >> 4) & 255;
-	int codecID = (payload[0] & 255);
+	int codecID = (payload[0] & 15);
 	int avc_packet_type = payload[1];
 	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
 
@@ -345,6 +345,7 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 	// 2 means AVC end of sequence
 	if (avc_packet_type == 0) {
 		write_init(payload + 5, size - 5);
+		write_playlist();
 	}
 	else if (avc_packet_type == 1) {
 		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
@@ -354,15 +355,25 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 			unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
 			unsigned char nal_unit_type = nal_unit_header & 31;
 
-			if (nal_unit_type < 6 && nal_unit_type > 19) {
-				(*sample_count)++;
-			}
 			samples[(*sample_count)].sample_size += nal_unit_size;
 			// TODO: Let's not do this. Freeing and malloc'ing probably is not best for performance
 			if (samples[(*sample_count)].data != NULL) {
 				free(samples[(*sample_count)].data);
 			}
 			samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
+			samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[3];
+			
+			if (nal_unit_type < 6 && nal_unit_type > 19) {
+				(*sample_count)++;
+			}
+
+			// we make new mp4 fragment
+			if (*sample_count == SAMPLE_COUNT) {
+				(*file_number)++;
+				write_segment(samples, (*file_number));
+				append_playlist((*file_number));
+				*sample_count = 0;
+			}
 
 			i += nal_unit_size;
 		}
@@ -370,13 +381,6 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 	else if (avc_packet_type == 2) {
 	}
 	
-	// we make new mp4 fragment
-	if (*sample_count == SAMPLE_COUNT) {
-		(*file_number)++;
-		write_segment(samples, (*file_number));
-		*sample_count = 0;
-		*file_number++;
-	}
 
 	// This switch is just to print out what frametype is
 	//switch(frametype) {
@@ -568,7 +572,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else if (MSG_TYPEID == 9) {
 				video_bytes += MSG_LENGTH;
-				parse_video_msg(sfd, payload, MSG_LENGTH, &sample_count, sample, &file_number);
+				parse_video_msg(sfd, payload, MSG_LENGTH, &sample_count, samples, &file_number);
 			}
 			else if (MSG_TYPEID == 18) {
 				parse_data_msg(sfd, payload, MSG_LENGTH);

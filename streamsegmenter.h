@@ -5,7 +5,7 @@ void insert_short(unsigned char*, int, unsigned short);
 void write_init(unsigned char*, int);
 typedef struct Box {
 	int size; // refers to how many bytes there are
-	unsigned char* name;
+	char* name;
 	unsigned char* data;
 } Box;
 typedef struct SampleData {
@@ -39,5 +39,5 @@ Box write_trak();
 Box write_mvhd();
 Box write_moov(unsigned char*, int);
 void write_segment(SampleData[], int);
-void write_playlist(FILE*);
-void append_segment(FILE*, int);
+void write_playlist();
+void append_playlist(int);

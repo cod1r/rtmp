@@ -5,7 +5,7 @@
 #include "streamsegmenter.h"
 // NOTE: We are assuming the integers are 32 bits; Might have to rewrite...
 // NOTE: when you use any bitwise operators, the number that is used to AND, for example is also affected by the endianness
-// NOTE: the base used in the ISO/IEC 14496-12:2015 spec to represent bytes is 16, which is why some number might look weird or seem like a random value
+// NOTE: the base used in the ISO/IEC 14496-12:2015 spec to represent bytes is 16, which is why some numbers might look weird or seem like a random value
 
 void insert_integer(unsigned char* data, int offset, unsigned int number) {
 	// converting back to system endian
@@ -1043,13 +1043,23 @@ void write_segment(SampleData samples[], int number) {
 
 // Playlist file part
 // This function creates the playlist file
-void write_playlist(FILE* file) {
+void write_playlist() {
+	FILE* playlist_file = fopen("index.m3u8", "w");
 	char* format = "#EXTM3U\n";
 	char* version = "#EXT-X-VERSION:7\n";
 	char* target_duration = "#EXT-X-TARGETDURATION:1\n";
 	char* uri_init = "#EXT-X-MAP:URI=\"init.mp4\"\n";
-	fwrite(format, strlen(format), 1, file);
-	fwrite(version, strlen(version), 1, file);
-	fwrite(target_duration, strlen(target_duration), 1, file);
-	fwrite(uri_init, strlen(uri_init), 1, file);
+	fwrite(format, strlen(format), 1, playlist_file);
+	fwrite(version, strlen(version), 1, playlist_file);
+	fwrite(target_duration, strlen(target_duration), 1, playlist_file);
+	fwrite(uri_init, strlen(uri_init), 1, playlist_file);
+	fclose(playlist_file);
+}
+
+void append_playlist(int file_number) {
+	char seq[5000];
+	sprintf(seq, "#EXT-INF:1.00000\nsequence%i.mp4\n", file_number);
+	FILE* playlist_file = fopen("index.m3u8", "a");
+	fwrite(playlist_file, strlen(seq), 1, playlist_file);
+	fclose(playlist_file);
 }
