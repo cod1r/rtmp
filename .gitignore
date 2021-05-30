@@ -5,3 +5,8 @@
 testruns/
 *.html
 *.js
+segmented/
+segmented_original/
+test*
+*.out
+*.exe

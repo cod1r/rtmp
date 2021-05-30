@@ -329,65 +329,87 @@ void parse_usr_msg() {
 void parse_audio_msg(int sfd, unsigned char payload[], int size) {
 	// gotta worry about audio sooner or later
 }
-
-void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* file_number_ptr) {
-	unsigned int file_number = *file_number_ptr;
-	
-	FILE* playlist_file = fopen("index.m3u8", "a");
-	char* segment_name[50000];
-	sprintf(segment_name, "sequence%i.mp4", file_number);
-	FILE* segment_file = fopen(segment_name, "a");
+// Change of plans...we aren't making a new segment every time a new keyframe pops up. We can creating a new segment every 150 samples. There might be some other factors in determining how many samples per mp4
+// fragment but we are running low on time.
+// We are going to have to know which NAL Units are combined together into a sample somehow (maybe 2d array of pointers?)
+// We are going to use an int array of 150 samples per mp4 fragment
+void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* sample_count, SampleData samples[], unsigned int* file_number) {
 
 	int frametype = (payload[0] >> 4) & 255;
 	int codecID = (payload[0] & 255);
 	int avc_packet_type = payload[1];
 	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
 
-	if (frametype == 1) {
-		file_number = (*file_number_ptr)++;
-		sprintf(segment_name, "sequence%i.mp4", file_number);
-		segment_file = fopen(segment_name, "a");
-		printf("keyframe, file: %i\n", file_number);
+	// avc packet type == 0 means the payload type is going to be an AVC sequence header meaning we get SPS and PPS
+	// 1 means the payload type is an NAL U which could include multiple NAL Units
+	// 2 means AVC end of sequence
+	if (avc_packet_type == 0) {
+		write_init(payload + 5, size - 5);
+	}
+	else if (avc_packet_type == 1) {
+		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
+		for (int i = 5; i < size;) {
+			unsigned int nal_unit_size = (payload[i] << 24) | (payload[i+1] << 16) | (payload[i+2] << 8) | payload[i+3];
+			unsigned char nal_unit_header = payload[i+4];
+			unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
+			unsigned char nal_unit_type = nal_unit_header & 31;
 
-		if (avc_packet_type == 0) {
-			write_init(&(payload[5]), size-5);
-			write_playlist(playlist_file);
+			if (nal_unit_type < 6 && nal_unit_type > 19) {
+				(*sample_count)++;
+			}
+			samples[(*sample_count)].sample_size += nal_unit_size;
+			// TODO: Let's not do this. Freeing and malloc'ing probably is not best for performance
+			if (samples[(*sample_count)].data != NULL) {
+				free(samples[(*sample_count)].data);
+			}
+			samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
+
+			i += nal_unit_size;
 		}
-		else if (avc_packet_type == 1) {
-			write_segment(segment_file, &(payload[5]), size-5, file_number);
-			append_playlist(playlist_file, file_number);
-		}
-		else if (avc_packet_type == 2) {
-			printf("avc packet type 2...we haven't done anything with this yet\n");
-		}
 	}
-	else if (frametype == 2) {
-		printf("interframe, file: %i\n", file_number);
-		append_segment(segment_file, payload + 5, size - 5);
-	}
-	else if (frametype == 3) {
-		printf("disposable interframe, file: %i\n", file_number);
-	}
-	else if (frametype == 4) {
-		printf("generated keyframe, file %i\n", file_number);
-	}
-	else if (frametype == 5) {
-		printf("video/command frame, file %i\n", file_number);
-	}
-	else {
-		printf("what the fuck!\n");
-		exit(EXIT_FAILURE);
+	else if (avc_packet_type == 2) {
 	}
 	
-	fclose(playlist_file);
-	fclose(segment_file);
+	// we make new mp4 fragment
+	if (*sample_count == SAMPLE_COUNT) {
+		(*file_number)++;
+		write_segment(samples, (*file_number));
+		*sample_count = 0;
+		*file_number++;
+	}
+
+	// This switch is just to print out what frametype is
+	//switch(frametype) {
+	//	case 1: 
+	//		printf("keyframe\n");
+	//		break;
+	//	case 2: 
+	//		printf("interframe\n");
+	//		break;
+	//	case 3: 
+	//		printf("disposable interframe\n");
+	//		break;
+	//	case 4: 
+	//		printf("generated interframe\n");
+	//		break;
+	//	case 5: 
+	//		printf("video/command frame\n");
+	//		break;
+	//	default: 
+	//		printf("frametype: %i error\n", frametype); 
+	//		exit(EXIT_FAILURE);
+	//		break;
+	//}
 }
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
 	// do something with metadata or user data
+	FILE* meta = fopen("metadata.txt", "w");
+	fwrite(payload, size, 1, meta);
+	fclose(meta);
 }
 
-
+// This function should probably be in streamsegmenter
 void parse_chunk_streams(int sfd) {
 	// using longs because I don't know big message lengths can get
 	// -- changed to ints because I am going to assume message lengths won't exceed 3 bytes
@@ -405,7 +427,8 @@ void parse_chunk_streams(int sfd) {
 	unsigned int TOTAL_BYTES = 0;
 	unsigned int video_bytes = 0;
 	unsigned int file_number = 0;
-	unsigned int samples = 0;
+	unsigned int sample_count = 0;
+	SampleData samples[SAMPLE_COUNT];
 	while (1) {
 		// used to see the first byte
 		unsigned char first = 0;
@@ -545,7 +568,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else if (MSG_TYPEID == 9) {
 				video_bytes += MSG_LENGTH;
-				parse_video_msg(sfd, payload, MSG_LENGTH, &file_number);
+				parse_video_msg(sfd, payload, MSG_LENGTH, &sample_count, sample, &file_number);
 			}
 			else if (MSG_TYPEID == 18) {
 				parse_data_msg(sfd, payload, MSG_LENGTH);

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#define SAMPLE_COUNT 150
 void insert_integer(unsigned char*, int, unsigned int);
 void insert_short(unsigned char*, int, unsigned short);
 void write_init(unsigned char*, int);
@@ -7,6 +8,12 @@ typedef struct Box {
 	unsigned char* name;
 	unsigned char* data;
 } Box;
+typedef struct SampleData {
+	unsigned int sample_size;
+	unsigned int composition_time;
+	unsigned int flags;
+	unsigned char* data;
+} SampleData;
 void insert_box(unsigned char*, int, Box, int);
 Box write_trex();
 Box write_mvex();
@@ -31,6 +38,6 @@ Box write_tkhd();
 Box write_trak();
 Box write_mvhd();
 Box write_moov(unsigned char*, int);
-void write_segment(unsigned char*, int, int);
+void write_segment(SampleData[], int);
 void write_playlist(FILE*);
 void append_segment(FILE*, int);
