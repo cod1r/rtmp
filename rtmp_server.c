@@ -351,6 +351,8 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
 		for (int i = 5; i < size;) {
 			unsigned int nal_unit_size = (payload[i] << 24) | (payload[i+1] << 16) | (payload[i+2] << 8) | payload[i+3];
+			// adding four because of the size bytes at the beginning
+			nal_unit_size += 4;
 			unsigned char nal_unit_header = payload[i+4];
 			unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
 			unsigned char nal_unit_type = nal_unit_header & 31;
@@ -362,7 +364,6 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 			}
 			samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
 			samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[3];
-			
 			if (nal_unit_type < 6 && nal_unit_type > 19) {
 				(*sample_count)++;
 			}
@@ -433,6 +434,9 @@ void parse_chunk_streams(int sfd) {
 	unsigned int file_number = 0;
 	unsigned int sample_count = 0;
 	SampleData samples[SAMPLE_COUNT];
+	for (int i = 0; i < SAMPLE_COUNT; i++) {
+		samples[i].data = NULL;
+	}
 	while (1) {
 		// used to see the first byte
 		unsigned char first = 0;
@@ -588,6 +592,7 @@ void parse_chunk_streams(int sfd) {
 }
 
 // handshake doesn't have different endianness considered
+// TODO: free allocated memory
 int handshake(int new_sfd) {
 	/*
 		The handshake begins with the client sending the C0 and C1 chunks.
@@ -604,7 +609,7 @@ int handshake(int new_sfd) {
 	packet_1_t* c1 				= (packet_1_t*)malloc(sizeof(packet_1_t));
 	packet_2_t* c2 				= (packet_2_t*)malloc(sizeof(packet_2_t));
 	// reads from new sfd. recv() is usually used for tcp connections or connection based sockets
-	ssize_t c0_size_version 	= recv(new_sfd, &(c0->version), sizeof(c0->version), 0) != sizeof(c0->version);
+	ssize_t c0_size_version 	= recv(new_sfd, &(c0->version), sizeof(c0->version), 0);
 
 	//printf("c0 version: %u\n", c0->version);
 	
