@@ -837,17 +837,20 @@ Box write_trun(SampleData samples[]) {
 	 * 		sample size (each sample has its own size)
 	 * 		sample flags
 	 * 		sample composition time
+	 * 		data offset
 	 */
 	Box trun;
 	trun.name = "trun";
 
-	unsigned int version_and_flags = htonl(0 + 512 + 1024 + 2048);
+	unsigned int version_and_flags = htonl(0 + 512 + 1024 + 2048 + 1);
 	unsigned int big_endian_sample_count = htonl(SAMPLE_COUNT);
+	unsigned int data_offset = htonl(1904);
 
 	int trun_size =
 		sizeof(version_and_flags) +
 		sizeof(big_endian_sample_count) +
-		4*SAMPLE_COUNT + 4 + 4;
+		sizeof(data_offset) +
+		12*SAMPLE_COUNT + 4 + 4;
 
 	trun.size = htonl(trun_size);
 	trun.data = (unsigned char*)malloc(trun_size);
@@ -858,10 +861,12 @@ Box write_trun(SampleData samples[]) {
 	}
 	insert_integer(trun.data, 8, version_and_flags);
 	insert_integer(trun.data, 12, big_endian_sample_count);
-	for (int i = 16; i < SAMPLE_COUNT + 16; i++) {
-		insert_integer(trun.data, 16+(i*4), samples[i-16].sample_size);
-		insert_integer(trun.data, 20+(i*4), samples[i-16].flags);
-		insert_integer(trun.data, 24+(i*4), samples[i-16].composition_time);
+	insert_integer(trun.data, 16, data_offset);
+	for (int i = 0; i < SAMPLE_COUNT; i++) {
+		printf("sample: %u, %u, %u\n", samples[i].sample_size, samples[i].flags, samples[i].composition_time);
+		insert_integer(trun.data, 20+(i*12), htonl(samples[i].sample_size));
+		insert_integer(trun.data, 24+(i*12), htonl(samples[i].flags));
+		insert_integer(trun.data, 28+(i*12), htonl(samples[i].composition_time));
 	}
 	return trun;
 }
@@ -872,7 +877,10 @@ Box write_tfdt() {
 	unsigned int version_and_flags = htonl(0);
 	unsigned int baseMediaDecodeTime = htonl(0);
 
-	int tfdt_size = sizeof(version_and_flags) + sizeof(baseMediaDecodeTime) + 4 + 4;
+	int tfdt_size = 
+		sizeof(version_and_flags) + 
+		sizeof(baseMediaDecodeTime) + 4 + 4;
+
 	tfdt.size = htonl(tfdt_size);
 	tfdt.data = (unsigned char*)malloc(tfdt_size);
 
@@ -1024,6 +1032,7 @@ void write_segment(SampleData samples[], int number) {
 	for (int i = 0; i < SAMPLE_COUNT; i++) {
 		summed_size += samples[i].sample_size;
 	}
+	printf("summed_size: %u\n", summed_size);
 	unsigned char* data = (unsigned char*)malloc(summed_size);
 	int data_index = 0;
 	for (int i = 0; i < SAMPLE_COUNT; i++) {
@@ -1032,6 +1041,7 @@ void write_segment(SampleData samples[], int number) {
 		}
 		data_index += samples[i].sample_size;
 	}
+	printf("done with copying over sample data to segment buffer\n");
 
 	Box moof = write_moof(samples);
 	Box mdat = write_mdat(data, summed_size);
@@ -1060,6 +1070,6 @@ void append_playlist(int file_number) {
 	char seq[5000];
 	sprintf(seq, "#EXT-INF:1.00000\nsequence%i.mp4\n", file_number);
 	FILE* playlist_file = fopen("index.m3u8", "a");
-	fwrite(playlist_file, strlen(seq), 1, playlist_file);
+	fwrite(seq, strlen(seq), 1, playlist_file);
 	fclose(playlist_file);
 }

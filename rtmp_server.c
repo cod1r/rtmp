@@ -345,42 +345,72 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 	// 1 means the payload type is an NAL U which could include multiple NAL Units
 	// 2 means AVC end of sequence
 	if (avc_packet_type == 0) {
-		//write_init(payload + 5, size - 5);
-		//write_playlist();
+		write_init(payload + 5, size - 5);
+		write_playlist();
 	}
 	else if (avc_packet_type == 1) {
 		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
-		//for (int i = 5; i < size;) {
-		//	unsigned int nal_unit_size = (payload[i] << 24) | (payload[i+1] << 16) | (payload[i+2] << 8) | payload[i+3];
-		//	// adding four because of the size bytes at the beginning
-		//	nal_unit_size += 4;
-		//	unsigned char nal_unit_header = payload[i+4];
-		//	unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
-		//	unsigned char nal_unit_type = nal_unit_header & 31;
+		for (int byte = 5; byte < size;) {
+			unsigned int nal_unit_size = (payload[byte] << 24) | (payload[byte+1] << 16) | (payload[byte+2] << 8) | payload[byte+3];
+			unsigned char nal_unit_header = payload[byte+4];
+			unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
+			unsigned char nal_unit_type = nal_unit_header & 31;
 
-		//	samples[(*sample_count)].sample_size += nal_unit_size;
-		//	// TODO: Let's not do this. Freeing and malloc'ing probably is not best for performance
-		//	if (samples[(*sample_count)].data != NULL) {
-		//		free(samples[(*sample_count)].data);
-		//	}
-		//	samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
-		//	samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[3];
-		//	if (nal_unit_type < 6 && nal_unit_type > 19) {
-		//		(*sample_count)++;
-		//	}
+			//unsigned char* saved = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
+			//for (int t = 0; t < samples[(*sample_count)].sample_size && samples[(*sample_count)].data != NULL; t++) {
+			//	saved[t] = samples[(*sample_count)].data[t];
+			//}
 
-		//	// we make new mp4 fragment
-		//	if (*sample_count == SAMPLE_COUNT) {
-		//		(*file_number)++;
-		//		write_segment(samples, (*file_number));
-		//		append_playlist((*file_number));
-		//		*sample_count = 0;
-		//	}
+			// TODO: Let's rewrite this later. Freeing and malloc'ing probably is not best for performance
+			// NOTE: trying to free a pointer that doesn't point to any memory location will result in a segmentation fault, 
+			// probably because the pointer tries to free memory that hasn't been allocated
+			if (samples[(*sample_count)].data != NULL) {
+				free(samples[(*sample_count)].data);
+			}
 
-		//	i += nal_unit_size;
-		//}
+			samples[(*sample_count)].sample_size += nal_unit_size;
+			samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
+
+			//for (int t = 0; t < samples[(*sample_count)].sample_size; i++) {
+			//	if (t < samples[(*sample_count)].sample_size - nal_unit_size) {
+			//		samples[(*sample_count)].data[t] = saved[t];
+			//	}
+			//	else {
+			//		samples[(*sample_count)].data[t] = payload[t-samples[(*sample_count)].sample_size-nal_unit_size+5];
+			//	}
+			//}
+
+			samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[2];
+			if (nal_unit_type < 6 || nal_unit_type > 19) {
+				(*sample_count)++;
+			}
+
+			// we make new mp4 fragment
+			if ((*sample_count) == SAMPLE_COUNT) {
+				(*file_number)++;
+				write_segment(samples, (*file_number));
+				append_playlist((*file_number));
+				(*sample_count) = 0;
+				for (int t = 0; t < SAMPLE_COUNT; t++) {
+					samples[t].sample_size = 0;
+				}
+			}
+			// plus four because of nal unit size bytes
+			byte += nal_unit_size + 4;
+		}
+		
+		
+		
+		
+		//char fname[50000];
+		//sprintf(fname, "sequence%i", *file_number);
+		//(*file_number)++;
+		//FILE* file = fopen(fname, "w");
+		//fwrite(payload, size, 1, file);
+		//fclose(file);
 	}
 	else if (avc_packet_type == 2) {
+		printf("end of sequence\n");
 	}
 	
 
@@ -435,6 +465,12 @@ void parse_chunk_streams(int sfd) {
 	int file_number = 0;
 	int sample_count = 0;
 	SampleData samples[SAMPLE_COUNT];
+	for (int i = 0; i < SAMPLE_COUNT; i++) {
+		samples[i].data = NULL;
+		samples[i].sample_size = 0;
+		samples[i].flags = 0;
+		samples[i].composition_time = 0;
+	}
 
 	while (1) {
 		// used to see the first byte
@@ -615,7 +651,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else if (MSG_TYPEID == 9) {
 				parse_video_msg(sfd, payload, MSG_LENGTH, &sample_count, samples, &file_number);
-				printf("video\n");
+				//printf("video\n");
 			}
 			else if (MSG_TYPEID == 18) {
 				parse_data_msg(sfd, payload, MSG_LENGTH);
