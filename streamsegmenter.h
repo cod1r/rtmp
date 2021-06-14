@@ -1,4 +1,3 @@
-#include <stdio.h>
 #define SAMPLE_COUNT 150
 void insert_integer(unsigned char*, int, unsigned int);
 void insert_short(unsigned char*, int, unsigned short);
@@ -9,10 +8,10 @@ typedef struct Box {
 	unsigned char* data;
 } Box;
 typedef struct SampleData {
-	unsigned int sample_size;
-	unsigned int composition_time;
-	unsigned int flags;
-	unsigned char* data;
+	int sample_size;
+	int composition_time;
+	int flags;
+	char* data;
 } SampleData;
 void insert_box(unsigned char*, int, Box, int);
 Box write_trex();

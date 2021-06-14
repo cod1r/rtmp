@@ -351,15 +351,17 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 	else if (avc_packet_type == 1) {
 		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
 		for (int byte = 5; byte < size;) {
-			unsigned int nal_unit_size = (payload[byte] << 24) | (payload[byte+1] << 16) | (payload[byte+2] << 8) | payload[byte+3];
-			unsigned char nal_unit_header = payload[byte+4];
-			unsigned char nal_ref_idc = (nal_unit_header >> 5) & 3;
-			unsigned char nal_unit_type = nal_unit_header & 31;
+			int nal_unit_size = (payload[byte] << 24) | (payload[byte+1] << 16) | (payload[byte+2] << 8) | payload[byte+3];
+			char nal_unit_header = payload[byte+4];
+			char nal_ref_idc = (nal_unit_header >> 5) & 3;
+			char nal_unit_type = nal_unit_header & 31;
 
-			//unsigned char* saved = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
-			//for (int t = 0; t < samples[(*sample_count)].sample_size && samples[(*sample_count)].data != NULL; t++) {
-			//	saved[t] = samples[(*sample_count)].data[t];
-			//}
+			//printf("nal unit size: %i\n", nal_unit_size);
+
+			char* saved = (char*)malloc(samples[(*sample_count)].sample_size);
+			for (int t = 0; t < samples[(*sample_count)].sample_size && samples[(*sample_count)].data != NULL; t++) {
+				saved[t] = samples[(*sample_count)].data[t];
+			}
 
 			// TODO: Let's rewrite this later. Freeing and malloc'ing probably is not best for performance
 			// NOTE: trying to free a pointer that doesn't point to any memory location will result in a segmentation fault, 
@@ -368,28 +370,40 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 				free(samples[(*sample_count)].data);
 			}
 
-			samples[(*sample_count)].sample_size += nal_unit_size;
-			samples[(*sample_count)].data = (unsigned char*)malloc(samples[(*sample_count)].sample_size);
+			samples[(*sample_count)].sample_size += nal_unit_size + 4;
+			samples[(*sample_count)].data = (char*)malloc(samples[(*sample_count)].sample_size);
 
-			//for (int t = 0; t < samples[(*sample_count)].sample_size; i++) {
-			//	if (t < samples[(*sample_count)].sample_size - nal_unit_size) {
-			//		samples[(*sample_count)].data[t] = saved[t];
-			//	}
-			//	else {
-			//		samples[(*sample_count)].data[t] = payload[t-samples[(*sample_count)].sample_size-nal_unit_size+5];
-			//	}
-			//}
+			int past_sample_data = 0;
+			int previous_sample_size = samples[(*sample_count)].sample_size - nal_unit_size - 4;
+			for (; past_sample_data < previous_sample_size; past_sample_data++) {
+				samples[(*sample_count)].data[past_sample_data] = saved[past_sample_data];
+			}
+			if (past_sample_data > 0) {
+				free(saved);
+			}
+			int current_sample_data = 0;
+			for (; past_sample_data < samples[(*sample_count)].sample_size; past_sample_data++) {
+				samples[(*sample_count)].data[past_sample_data] = payload[byte+current_sample_data];
+				current_sample_data++;
+			}
+
+			if (current_sample_data != nal_unit_size + 4) {
+				printf("not equal to nal_unit_size; current_sample_data: %i, nal_unit_size: %i\n", current_sample_data, nal_unit_size);
+				exit(EXIT_FAILURE);
+			}
 
 			samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[2];
-			if (nal_unit_type < 6 || nal_unit_type > 19) {
+			if (nal_unit_type < 6 || nal_unit_type > 18) {
 				(*sample_count)++;
 			}
 
 			// we make new mp4 fragment
 			if ((*sample_count) == SAMPLE_COUNT) {
 				(*file_number)++;
+				printf("creating the segment...\n");
 				write_segment(samples, (*file_number));
 				append_playlist((*file_number));
+				printf("done with creating segment and updating the index playlist...\n");
 				(*sample_count) = 0;
 				for (int t = 0; t < SAMPLE_COUNT; t++) {
 					samples[t].sample_size = 0;
@@ -413,6 +427,13 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 		printf("end of sequence\n");
 	}
 	
+
+	//this is to debug
+	//char haha[50000];
+	//sprintf(haha, "output/sequence%i.mp4", (*file_number)++);
+	//FILE* ff = fopen(haha, "w");
+	//fwrite(payload, size, 1, ff);
+	//fclose(ff);
 
 	// This switch is just to print out what frametype is
 	//switch(frametype) {
@@ -570,11 +591,6 @@ void parse_chunk_streams(int sfd) {
 					ssize_t payload_rec_size = recv(sfd, payload+bytes_received, MAX_CHUNK_SIZE - (bytes_received - old_bytes_received), 0);
 					bytes_received += (int)payload_rec_size;
 				}
-				//if ((int)payload_rec_size != MAX_CHUNK_SIZE) {
-				//	printf("1.payload_rec_size != max chunk size, %i, %i, difference: %i, msg length: %i, bytes_received: %i\n", \
-				//			payload_rec_size, MAX_CHUNK_SIZE, difference, MSG_LENGTH, bytes_received);
-				//	exit(EXIT_FAILURE);
-				//}
 				if (difference < 0 || bytes_received > MSG_LENGTH) {
 					printf("fuck...\n");
 					exit(EXIT_FAILURE);

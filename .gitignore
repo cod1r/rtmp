@@ -10,3 +10,4 @@ segmented_original/
 test*
 *.out
 *.exe
+**/output/
