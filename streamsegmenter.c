@@ -35,12 +35,11 @@ Box write_trex() {
 	trex.name = "trex";
 
 	unsigned int version_and_flags = htonl(0);
-	unsigned int track_id = htonl(0);
+	unsigned int track_id = htonl(1);
 	unsigned int def_sample_desc_index = htonl(1);
-	unsigned int def_sample_duration = htonl(512);
+	unsigned int def_sample_duration = htonl(0);
 	unsigned int def_sample_size = htonl(0);
-	//unsigned int def_sample_flags = htonl(0);
-	unsigned int def_sample_flags = htonl(16842752);
+	unsigned int def_sample_flags = htonl(0);
 
 	int trex_size = 
 		sizeof(version_and_flags) + 
@@ -454,16 +453,15 @@ Box write_hdlr() {
 	*/
 	unsigned int version_and_flags = htonl(0);
 	unsigned int pre_defined = htonl(0);
-	char* handler_type = "vide"; // audio media uses 'soun'
+	char *handler_type = "vide"; // audio media uses 'soun'
 	unsigned int reserved[3] = {0, 0, 0};
-	char* name = "VideoHandler ";
+	char name[13] = {'V', 'i', 'd', 'e', 'o', 'H', 'a', 'n', 'd', 'l', 'e', 'r', 0};
 	int hdlr_size = 
 		sizeof(version_and_flags) + 
 		sizeof(pre_defined) + 
 		strlen(handler_type) + 
 		sizeof(reserved) + 
-		strlen(name) + 4 + 4;
-	//printf("hdlr size: %i\n", hdlr_size);
+		sizeof(name) + 4 + 4;
 	hdlr.name = "hdlr";
 	hdlr.size = htonl(hdlr_size);
 	hdlr.data = (unsigned char*)malloc(hdlr_size);
@@ -479,7 +477,7 @@ Box write_hdlr() {
 	for (int i = 0; i < 3; i++) {
 		insert_integer(hdlr.data, 20+(i*4), reserved[i]);
 	}
-	for (int i = 32; i < 32 + strlen(name); i++) {
+	for (int i = 32; i < 32 + sizeof(name); i++) {
 		hdlr.data[i] = name[i-32];
 	}
 	return hdlr;
@@ -500,7 +498,7 @@ Box write_mdhd() {
 	unsigned int version_and_flags = htonl(0);
 	unsigned int creation_time = htonl(0);
 	unsigned int modification_time = htonl(0);
-	unsigned int timescale = htonl(12800);
+	unsigned int timescale = htonl(30000);
 	unsigned int duration = htonl(0);
 	unsigned short pad_and_language_code = htons(21956);
 	unsigned short pre_defined = htons(0);
@@ -544,8 +542,6 @@ Box write_mdia(unsigned char* decoderinfo, int decoder_size) {
 	int minf_size = ntohl(minf.size);
 
 	int mdia_size = mdhd_size + hdlr_size + minf_size + 4 + 4;
-	//printf("mdia size: %i\n", mdia_size);
-	//printf("mdhd size: %i, hdlr size: %i, minf size: %i\n", mdhd_size, hdlr_size, minf_size);
 	mdia.size = htonl(mdia_size);
 	mdia.data = (unsigned char*)malloc(mdia_size);
 
@@ -583,7 +579,7 @@ Box write_tkhd() {
 	unsigned int version_and_flags = htonl(0 + 1 + 2);
 	unsigned int creation_time = htonl(0);
 	unsigned int modification_time = htonl(0);
-	unsigned int track_ID = htonl(0);
+	unsigned int track_ID = htonl(1);
 	unsigned int reserved = htonl(0);
 	unsigned int duration = htonl(0);
 	unsigned int reserved_two[2] = {htonl(0), htonl(0)};
@@ -648,7 +644,7 @@ Box write_trak(unsigned char* decoderinfo, int decoder_size) {
 	int mdia_size = ntohl(mdia.size);
 	int trak_size = tkhd_size + mdia_size + 4 + 4;
 	trak.size = htonl(trak_size);
-	trak.data = (unsigned char*)malloc(trak_size);
+	trak.data = (unsigned char *)malloc(trak_size);
 	insert_integer(trak.data, 0, trak.size);
 	for (int i = 4; i < 8; i ++) {
 		trak.data[i] = trak.name[i-4];
@@ -681,7 +677,7 @@ Box write_mvhd() {
 	unsigned int modification_time = htonl(0);
 	unsigned int timescale = htonl(1000);
 	unsigned int duration = htonl(0);
-	unsigned int rate = htonl(65536);
+	unsigned int rate = htonl(0x00010000);
 	unsigned short volume = htons(256);
 	unsigned short reserved = htons(0);
 	unsigned int reserved_two[2] = {htonl(0), htonl(0)};
@@ -689,7 +685,19 @@ Box write_mvhd() {
 	unsigned int pre_defined[6] = {0, 0, 0, 0, 0, 0};
 	// no idea why this is 2. The init file generated from ffmpeg makes this 2
 	unsigned int next_track_ID = htonl(2);
-	int size = 100 + 4 + 4;
+	int size = 
+		sizeof(version_and_flags) +
+		sizeof(creation_time) +
+		sizeof(modification_time) +
+		sizeof(timescale) +
+		sizeof(duration) +
+		sizeof(rate) +
+		sizeof(volume) +
+		sizeof(reserved) +
+		sizeof(reserved_two) +
+		sizeof(matrix) +
+		sizeof(pre_defined) +
+		sizeof(next_track_ID) + 4 + 4;
 	mvhd.size = htonl(size);
 	mvhd.data = (unsigned char*)malloc(size);
 	insert_integer(mvhd.data, 0, mvhd.size);
@@ -779,7 +787,7 @@ void write_init(unsigned char* avcC, int size_of_avcC) {
 Box write_styp() {
 	Box styp;
 	styp.name = "styp";
-	const unsigned char styp_data[] = {0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 53, 0, 0, 2, 0, 105, 115, 111, 54, 109, 112, 52, 49};
+	const unsigned char styp_data[] = {0, 0, 0, 24, 115, 116, 121, 112, 105, 115, 111, 53, 0, 0, 2, 0, 105, 115, 111, 54, 109, 112, 52, 49};
 	int styp_size = 24;
 	styp.size = htonl(styp_size);
 	styp.data = (unsigned char*)malloc(styp_size);
@@ -790,32 +798,34 @@ Box write_styp() {
 	return styp;
 }
 
-Box write_sidx() {
+Box write_sidx(int ept, int referenced_size, int composition_time_offset_sum /* <- this is the subsegment_duration */) {
 	Box sidx;
 	sidx.name = "sidx";
 
 	unsigned int version_and_flags = htonl(0);
-	unsigned int reference_id = htonl(0);
-	unsigned int timescale = htonl(12800);
-	unsigned int earliest_presentation_time = htonl(0);
+	unsigned int reference_id = htonl(1);
+	unsigned int timescale = htonl(30000);
+	// we need this so that the decoder can know which segments are before which
+	unsigned int earliest_presentation_time = htonl(ept);
 	unsigned int first_offset = htonl(0);
 	unsigned short reserved = htons(0);
 	unsigned short reference_count = htons(1);
-	unsigned int reference_type_reference_size = htonl(0); //size minus all the bytes before the moof atom I think. But for now I will just put it as zero
+	unsigned int reference_type_reference_size = htonl(referenced_size); //size minus all the bytes before the moof atom I think. But for now I will just put it as zero
 	// this might have to change if any problems arise...
-	unsigned int subsegment_duration = htonl(0);
+	unsigned int subsegment_duration = htonl(composition_time_offset_sum);
 	// SAP -> Stream Access Point
-	unsigned int starts_with_sap_and_sap_type_and_sap_delta_time = htonl(0);
+	unsigned int starts_with_sap_and_sap_type_and_sap_delta_time = htonl(1 << 31);
 
 	int sidx_size = 
-		sizeof(version_and_flags) + \
-		sizeof(reference_id) + \
-		sizeof(timescale) + \
-		sizeof(earliest_presentation_time) + \
-		sizeof(first_offset) + sizeof(reserved) + \
-		sizeof(reference_count) + \
-		sizeof(reference_type_reference_size) + \
-		sizeof(subsegment_duration) + \
+		sizeof(version_and_flags) + 
+		sizeof(reference_id) + 
+		sizeof(timescale) + 
+		sizeof(earliest_presentation_time) + 
+		sizeof(first_offset) + 
+		sizeof(reserved) + 
+		sizeof(reference_count) + 
+		sizeof(reference_type_reference_size) + 
+		sizeof(subsegment_duration) + 
 		sizeof(starts_with_sap_and_sap_type_and_sap_delta_time) + 4 + 4;
 
 	sidx.size = htonl(sidx_size);
@@ -838,7 +848,7 @@ Box write_sidx() {
 	return sidx;
 }
 
-Box write_trun(SampleData samples[]) {
+Box write_trun(SampleData samples[], int num_samples) {
 	/*
 	 * Flags:
 	 * 		sample size (each sample has its own size)
@@ -850,9 +860,11 @@ Box write_trun(SampleData samples[]) {
 	trun.name = "trun";
 
 	unsigned int version_and_flags = htonl(0 + 512 + 1024 + 2048 + 1);
-	unsigned int big_endian_sample_count = htonl(SAMPLE_COUNT);
+	unsigned int big_endian_sample_count = htonl(num_samples);
+	// adding constants to the data offset which includes atoms above the 'trun' atom
 	unsigned int data_offset = htonl(
-									12*SAMPLE_COUNT + 8 +
+									// each sample has 12 bytes and we add 8 because of the 'mdat' string and the mdat size bytes
+									12*num_samples + 8 +
 									strlen("moof") + 4 +
 									strlen("mfhd") + 4 + 4 + 4 +
 									strlen("traf") + 4 + 
@@ -865,7 +877,7 @@ Box write_trun(SampleData samples[]) {
 		sizeof(version_and_flags) +
 		sizeof(big_endian_sample_count) +
 		sizeof(data_offset) +
-		12*SAMPLE_COUNT + 4 + 4;
+		12*num_samples + 4 + 4;
 
 	trun.size = htonl(trun_size);
 	trun.data = (unsigned char*)malloc(trun_size);
@@ -877,8 +889,7 @@ Box write_trun(SampleData samples[]) {
 	insert_integer(trun.data, 8, version_and_flags);
 	insert_integer(trun.data, 12, big_endian_sample_count);
 	insert_integer(trun.data, 16, data_offset);
-	for (int i = 0; i < SAMPLE_COUNT; i++) {
-		//printf("sample: %u, %u, %u\n", samples[i].sample_size, samples[i].flags, samples[i].composition_time);
+	for (int i = 0; i < num_samples; i++) {
 		insert_integer(trun.data, 20+(i*12), htonl(samples[i].sample_size));
 		insert_integer(trun.data, 24+(i*12), htonl(samples[i].flags));
 		insert_integer(trun.data, 28+(i*12), htonl(samples[i].composition_time));
@@ -890,11 +901,11 @@ Box write_tfdt() {
 	Box tfdt;
 	tfdt.name = "tfdt";
 	unsigned int version_and_flags = htonl(0);
-	unsigned int baseMediaDecodeTime = htonl(0);
+	unsigned int baseMediaDecodeTime_1 = htonl(0);
 
 	int tfdt_size = 
 		sizeof(version_and_flags) + 
-		sizeof(baseMediaDecodeTime) + 4 + 4;
+		sizeof(baseMediaDecodeTime_1) + 4 + 4;
 
 	tfdt.size = htonl(tfdt_size);
 	tfdt.data = (unsigned char*)malloc(tfdt_size);
@@ -904,7 +915,7 @@ Box write_tfdt() {
 		tfdt.data[i] = tfdt.name[i-4];
 	}
 	insert_integer(tfdt.data, 8, version_and_flags);
-	insert_integer(tfdt.data, 12, baseMediaDecodeTime);
+	insert_integer(tfdt.data, 12, baseMediaDecodeTime_1);
 	return tfdt;
 }
 
@@ -919,11 +930,9 @@ Box write_tfhd() {
 	tfhd.name = "tfhd";
 
 	unsigned int version_and_flags = htonl(0 + 131072 + 16 + 32 + 8);
-	unsigned int track_id = htonl(0);
+	unsigned int track_id = htonl(1);
 	// optional below
-	unsigned int base_data_offset_first_four_bytes = htonl(0);
-	unsigned int base_data_offset_second_four_bytes = htonl(0);
-	unsigned int def_sample_duration = htonl(512);
+	unsigned int def_sample_duration = htonl(1001);
 	unsigned int def_sample_size = htonl(0);
 	unsigned int def_sample_flags = htonl(0);
 
@@ -948,7 +957,7 @@ Box write_tfhd() {
 	return tfhd;
 }
 
-Box write_traf(SampleData samples[]) {
+Box write_traf(SampleData samples[], int num_samples) {
 	Box traf;
 	traf.name = "traf";
 
@@ -958,12 +967,12 @@ Box write_traf(SampleData samples[]) {
 	Box tfdt = write_tfdt();
 	int tfdt_size = ntohl(tfdt.size);
 
-	Box trun = write_trun(samples);
+	Box trun = write_trun(samples, num_samples);
 	int trun_size = ntohl(trun.size);
 	
 	int traf_size = tfhd_size + tfdt_size + trun_size + 4 + 4;
 	traf.size = htonl(traf_size);
-	traf.data = (unsigned char*)malloc(traf_size);
+	traf.data = (unsigned char *)malloc(traf_size);
 
 	insert_integer(traf.data, 0, traf.size);
 	for (int i = 4; i < 8; i++) {
@@ -975,12 +984,12 @@ Box write_traf(SampleData samples[]) {
 	return traf;
 }
 
-Box write_mfhd() {
+Box write_mfhd(int file_number /* <- sequence_number */) {
 	Box mfhd;
 	mfhd.name = "mfhd";
 
 	unsigned int version_and_flags = htonl(0);
-	unsigned int sequence_number = htonl(0);
+	unsigned int sequence_number = htonl(file_number);
 
 	int mfhd_size = sizeof(version_and_flags) + sizeof(sequence_number) + 4 + 4;
 	mfhd.size = htonl(mfhd_size);
@@ -995,14 +1004,14 @@ Box write_mfhd() {
 	return mfhd;
 }
 
-Box write_moof(SampleData samples[]) {
+Box write_moof(SampleData samples[], int num_samples, int file_number) {
 	Box moof;
 	moof.name = "moof";
 
-	Box mfhd = write_mfhd();
+	Box mfhd = write_mfhd(file_number);
 	int mfhd_size = ntohl(mfhd.size);
 
-	Box traf = write_traf(samples);
+	Box traf = write_traf(samples, num_samples);
 	int traf_size = ntohl(traf.size);
 
 	int moof_size = mfhd_size + traf_size + 4 + 4;
@@ -1038,31 +1047,36 @@ Box write_mdat(unsigned char* data, int size) {
 	return mdat;
 }
 // This function creates an MP4 Fragment/Segment
-void write_segment(SampleData samples[], int number) {
+// NOTE: ept means earliest presentation time
+void write_segment(SampleData *samples, int number, int num_samples, int ept, int composition_time_offset_sum) {
 	char file_name[50000];
 	sprintf(file_name, "sequence%i.mp4", number);
-	FILE* segment_file = fopen(file_name, "w");
+	FILE *segment_file = fopen(file_name, "w");
 
 	unsigned int summed_size = 0;
-	for (int i = 0; i < SAMPLE_COUNT; i++) {
+	for (int i = 0; i < num_samples; i++) {
 		summed_size += samples[i].sample_size;
 	}
-	//printf("summed_size: %u\n", summed_size);
 	unsigned char* data = (unsigned char*)malloc(summed_size);
 	int data_index = 0;
-	for (int i = 0; i < SAMPLE_COUNT; i++) {
+	for (int i = 0; i < num_samples; i++) {
 		for (int j = data_index; j < samples[i].sample_size + data_index; j++) {
 			data[j] = samples[i].data[j-data_index];
 		}
 		data_index += samples[i].sample_size;
 	}
-	printf("done with copying over sample data to segment buffer\n");
 
-	Box moof = write_moof(samples);
+	//Box styp = write_styp();
+	Box moof = write_moof(samples, num_samples, number);
 	Box mdat = write_mdat(data, summed_size);
+	Box sidx = write_sidx(ept, ntohl(moof.size) + ntohl(mdat.size), composition_time_offset_sum);
 
+	//fwrite(styp.data, ntohl(styp.size), 1, segment_file);
+	fwrite(sidx.data, ntohl(sidx.size), 1, segment_file);
 	fwrite(moof.data, ntohl(moof.size), 1, segment_file);
 	fwrite(mdat.data, ntohl(mdat.size), 1, segment_file);
+	//free(styp.data);
+	free(sidx.data);
 	free(moof.data);
 	free(mdat.data);
 	fclose(segment_file);
@@ -1074,18 +1088,21 @@ void write_playlist() {
 	FILE* playlist_file = fopen("index.m3u8", "w");
 	char* format = "#EXTM3U\n";
 	char* version = "#EXT-X-VERSION:7\n";
-	char* target_duration = "#EXT-X-TARGETDURATION:1\n";
+	char target_duration[5000];
+	sprintf(target_duration, "#EXT-X-TARGETDURATION:%i\n", INTERVAL/1000);
+	char* playlist_type = "#EXT-X-PLAYLIST-TYPE:EVENT\n";
 	char* uri_init = "#EXT-X-MAP:URI=\"init.mp4\"\n";
 	fwrite(format, strlen(format), 1, playlist_file);
 	fwrite(version, strlen(version), 1, playlist_file);
 	fwrite(target_duration, strlen(target_duration), 1, playlist_file);
+	fwrite(playlist_type, strlen(playlist_type), 1, playlist_file);
 	fwrite(uri_init, strlen(uri_init), 1, playlist_file);
 	fclose(playlist_file);
 }
 
 void append_playlist(int file_number) {
 	char seq[5000];
-	sprintf(seq, "#EXTINF:1.000000,\nsequence%i.mp4\n", file_number);
+	sprintf(seq, "#EXTINF:%i.000000,\nsequence%i.mp4\n", INTERVAL/1000, file_number);
 	FILE* playlist_file = fopen("index.m3u8", "a");
 	fwrite(seq, strlen(seq), 1, playlist_file);
 	fclose(playlist_file);

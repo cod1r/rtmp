@@ -1,4 +1,4 @@
-#define SAMPLE_COUNT 150
+#define INTERVAL 5000
 void insert_integer(unsigned char*, int, unsigned int);
 void insert_short(unsigned char*, int, unsigned short);
 void write_init(unsigned char*, int);
@@ -11,7 +11,7 @@ typedef struct SampleData {
 	int sample_size;
 	int composition_time;
 	int flags;
-	char* data;
+	unsigned char* data;
 } SampleData;
 void insert_box(unsigned char*, int, Box, int);
 Box write_trex();
@@ -37,6 +37,6 @@ Box write_tkhd();
 Box write_trak();
 Box write_mvhd();
 Box write_moov(unsigned char*, int);
-void write_segment(SampleData[], int);
+void write_segment(SampleData[], int, int, int, int);
 void write_playlist();
 void append_playlist(int);

@@ -35,11 +35,42 @@ void prepare_time(unsigned char timestamp[]) {
 	timestamp[0] = t >> 16;
 }
 // for big endian
-int get_size(unsigned char msg_length[]) {
+int get_message_length(unsigned char msg_length[]) {
 	return msg_length[0]*(1 << 16) + msg_length[1]*(1 << 8) + msg_length[2];
 }
 
-void get_msg_header(int sfd, int type, void* container) {
+ssize_t receive(int sfd, unsigned char buffer[], int size) {
+	int byte_count = 0;
+	while (byte_count < size) {
+		ssize_t current_num_bytes_received = recv(sfd, buffer+byte_count, size-byte_count, 0);
+		byte_count += current_num_bytes_received;
+	}
+	return (ssize_t)byte_count;
+}
+
+void add_sample_data(SampleData **samples, int *samples_capacity_ptr, int *sample_count_ptr, SampleData sample) {
+	if (*samples != NULL && *samples_capacity_ptr > 0 && *sample_count_ptr == *samples_capacity_ptr) {
+		SampleData *samples_copy = (SampleData *)malloc(sizeof(SampleData) * (*sample_count_ptr));
+		for (int i = 0; i < *sample_count_ptr; i++) {
+			samples_copy[i] = (*samples)[i];
+		}
+		free(*samples);
+		(*samples_capacity_ptr) *= 2;
+		(*samples) = (SampleData *)malloc(sizeof(SampleData) * (*samples_capacity_ptr));
+		for (int i = 0; i < *sample_count_ptr; i++) {
+			(*samples)[i] = samples_copy[i];
+		}
+		free(samples_copy);
+	}
+	else if (*samples == NULL && *samples_capacity_ptr == 0) {
+		(*samples_capacity_ptr) = 1;
+		(*samples) = (SampleData *)malloc(sizeof(SampleData) * (*samples_capacity_ptr));
+	}
+	(*samples)[*sample_count_ptr] = sample;
+	(*sample_count_ptr)++;
+}
+
+void get_msg_header(int sfd, int type, void *container) {
 	switch (type) {
 		case 0: {
 			chunk_msg_header_0_t* c = (chunk_msg_header_0_t*)container;
@@ -223,6 +254,7 @@ void onPublish(int sfd, unsigned char tid[8]) {
 	send(sfd, &two_zeroes, 2, 0);
 	send(sfd, &objend, 1, 0);
 }
+
 void parse_command_msg(int sfd, unsigned int cs_id, unsigned char payload[], int size, unsigned int window_acknowledgement_size) {
 	// looping through the bytes that we get
 	// these are amf encoded
@@ -330,16 +362,32 @@ void parse_usr_msg() {
 void parse_audio_msg(int sfd, unsigned char payload[], int size) {
 	// gotta worry about audio sooner or later
 }
+
+void output_video_msg_to_file(unsigned char payload[], int size, int file_number) {
+	char num[5000];
+	sprintf(num, "output/sequence%i.mp4", file_number);
+	FILE *output = fopen(num, "w");
+	fwrite(payload, size, 1, output);
+	fclose(output);
+}
 // Change of plans...we aren't making a new segment every time a new keyframe pops up. We can creating a new segment every 150 samples. There might be some other factors in determining how many samples per mp4
 // fragment but we are running low on time.
 // We are going to have to know which NAL Units are combined together into a sample somehow (maybe 2d array of pointers?)
 // We are going to use an int array of 150 samples per mp4 fragment
-void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* sample_count, SampleData samples[], unsigned int* file_number) {
+void parse_video_msg(
+		unsigned char payload[], 
+		int size, int *samples_capacity_ptr, 
+		int *sample_count_ptr, 
+		SampleData **samples, 
+		int *file_number, 
+		unsigned int *current_time, 
+		int *composition_time_offset_sum, 
+		int *first_composition_time_offset
+		) {
 
 	int frametype = (payload[0] >> 4) & 255;
 	int codecID = (payload[0] & 15);
 	int avc_packet_type = payload[1];
-	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
 
 	// avc packet type == 0 means the payload type is going to be an AVC sequence header meaning we get SPS and PPS
 	// 1 means the payload type is an NAL U which could include multiple NAL Units
@@ -349,6 +397,12 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 		write_playlist();
 	}
 	else if (avc_packet_type == 1) {
+		unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
+		SampleData sample;
+		sample.sample_size = 0;
+		sample.composition_time = 0;
+		sample.flags = 0;
+		sample.data = NULL;
 		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
 		for (int byte = 5; byte < size;) {
 			int nal_unit_size = (payload[byte] << 24) | (payload[byte+1] << 16) | (payload[byte+2] << 8) | payload[byte+3];
@@ -356,34 +410,32 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 			char nal_ref_idc = (nal_unit_header >> 5) & 3;
 			char nal_unit_type = nal_unit_header & 31;
 
-			//printf("nal unit size: %i\n", nal_unit_size);
-
-			char* saved = (char*)malloc(samples[(*sample_count)].sample_size);
-			for (int t = 0; t < samples[(*sample_count)].sample_size && samples[(*sample_count)].data != NULL; t++) {
-				saved[t] = samples[(*sample_count)].data[t];
-			}
-
 			// TODO: Let's rewrite this later. Freeing and malloc'ing probably is not best for performance
 			// NOTE: trying to free a pointer that doesn't point to any memory location will result in a segmentation fault, 
 			// probably because the pointer tries to free memory that hasn't been allocated
-			if (samples[(*sample_count)].data != NULL) {
-				free(samples[(*sample_count)].data);
+			char *saved = NULL;
+			if (sample.data != NULL) {
+				saved = (unsigned char *)malloc(sample.sample_size);
+				for (int t = 0; t < sample.sample_size; t++) {
+					saved[t] = sample.data[t];
+				}
+				free(sample.data);
 			}
 
-			samples[(*sample_count)].sample_size += nal_unit_size + 4;
-			samples[(*sample_count)].data = (char*)malloc(samples[(*sample_count)].sample_size);
+			sample.sample_size += nal_unit_size + 4;
+			sample.data = (unsigned char *)malloc(sample.sample_size);
 
-			int past_sample_data = 0;
-			int previous_sample_size = samples[(*sample_count)].sample_size - nal_unit_size - 4;
-			for (; past_sample_data < previous_sample_size; past_sample_data++) {
-				samples[(*sample_count)].data[past_sample_data] = saved[past_sample_data];
+			int sample_index = 0;
+			int previous_sample_size = sample.sample_size - nal_unit_size - 4;
+			for (; sample_index < previous_sample_size && saved != NULL; sample_index++) {
+				sample.data[sample_index] = saved[sample_index];
 			}
-			if (past_sample_data > 0) {
+			if (sample_index > 0 && saved != NULL) {
 				free(saved);
 			}
 			int current_sample_data = 0;
-			for (; past_sample_data < samples[(*sample_count)].sample_size; past_sample_data++) {
-				samples[(*sample_count)].data[past_sample_data] = payload[byte+current_sample_data];
+			for (; sample_index < sample.sample_size; sample_index++) {
+				sample.data[sample_index] = payload[byte+current_sample_data];
 				current_sample_data++;
 			}
 
@@ -392,29 +444,37 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 				exit(EXIT_FAILURE);
 			}
 
-			samples[(*sample_count)].composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[2];
-			if (nal_unit_type < 6 || nal_unit_type > 18) {
-				(*sample_count)++;
-			}
+			sample.composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[2];
 
-			// we make new mp4 fragment
-			if ((*sample_count) == SAMPLE_COUNT) {
+			*composition_time_offset_sum += sample.composition_time;
+
+			if (nal_unit_type < 6 || nal_unit_type > 18) {
+				add_sample_data(samples, samples_capacity_ptr, sample_count_ptr, sample);
+				sample.sample_size = 0;
+				sample.composition_time = 0;
+				sample.flags = 0;
+				// not freeing sample.data because if I free it, the data stored in the buffer will also be freed
+				sample.data = NULL;
+			}
+			
+			if ((get_current_time() - *current_time) % INTERVAL == 0 && get_current_time() != *current_time && *samples_capacity_ptr > 0 && *samples != NULL) {
 				(*file_number)++;
 				printf("creating the segment...\n");
-				write_segment(samples, (*file_number));
+				write_segment(*samples, (*file_number), (*sample_count_ptr), *first_composition_time_offset + (*samples)[0].composition_time, *composition_time_offset_sum);
 				append_playlist((*file_number));
 				printf("done with creating segment and updating the index playlist...\n");
-				(*sample_count) = 0;
-				for (int t = 0; t < SAMPLE_COUNT; t++) {
-					samples[t].sample_size = 0;
-				}
+				// after we make a new mp4 fragment, we want to free the buffer and reset
+				free(*samples);
+				*samples = NULL;
+				(*sample_count_ptr) = 0;
+				(*samples_capacity_ptr) = 0;
+				*current_time = get_current_time();
+				*first_composition_time_offset = *composition_time_offset_sum;
+				*composition_time_offset_sum = 0;
 			}
 			// plus four because of nal unit size bytes
 			byte += nal_unit_size + 4;
 		}
-		
-		
-		
 		
 		//char fname[50000];
 		//sprintf(fname, "sequence%i", *file_number);
@@ -426,37 +486,7 @@ void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int* s
 	else if (avc_packet_type == 2) {
 		printf("end of sequence\n");
 	}
-	
 
-	//this is to debug
-	//char haha[50000];
-	//sprintf(haha, "output/sequence%i.mp4", (*file_number)++);
-	//FILE* ff = fopen(haha, "w");
-	//fwrite(payload, size, 1, ff);
-	//fclose(ff);
-
-	// This switch is just to print out what frametype is
-	//switch(frametype) {
-	//	case 1: 
-	//		printf("keyframe\n");
-	//		break;
-	//	case 2: 
-	//		printf("interframe\n");
-	//		break;
-	//	case 3: 
-	//		printf("disposable interframe\n");
-	//		break;
-	//	case 4: 
-	//		printf("generated interframe\n");
-	//		break;
-	//	case 5: 
-	//		printf("video/command frame\n");
-	//		break;
-	//	default: 
-	//		printf("frametype: %i error\n", frametype); 
-	//		exit(EXIT_FAILURE);
-	//		break;
-	//}
 }
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
@@ -478,20 +508,24 @@ void parse_chunk_streams(int sfd) {
 	// this will be our payload buffer
 	// WE ONLY RESET PAYLOAD IF SIZE CHANGES, OTHERWISE WE ONLY HAVE TO RESET THE INDEX TO WHERE WE START INSERTING DATA; I AM ASSUMING THAT WORKS
 	// THE RECV() FUNCTION WILL START INSERTING DATA INTO THE PAYLOAD AT THE SPECIFIED INDEX (BYTES_RECEIVED) AND OVERWRITE ANY BYTES THAT WERE THERE.
-	char* payload = NULL;
-	char MSG_TYPEID = 0;
+	unsigned char* payload = NULL;
+	unsigned char MSG_TYPEID = 0;
 	int CS_ID = 0;
 	int MSG_STREAM_ID = 0;
 	int WINDOW_ACKNOWLEDGEMENT_SIZE = 2e9;
 	int file_number = 0;
+	int timestamp = 0;
+	int timestamp_delta = 0;
+	SampleData *samples = NULL;
+	int samples_capacity = 0;
 	int sample_count = 0;
-	SampleData samples[SAMPLE_COUNT];
-	for (int i = 0; i < SAMPLE_COUNT; i++) {
-		samples[i].data = NULL;
-		samples[i].sample_size = 0;
-		samples[i].flags = 0;
-		samples[i].composition_time = 0;
-	}
+	unsigned int current_time = get_current_time();
+	int composition_time_offset_sum = 0;
+	int first_composition_time_offset = 0;
+
+	// TODO: remove later!
+	int file_number_temp = 0;
+
 
 	while (1) {
 		// used to see the first byte
@@ -524,43 +558,51 @@ void parse_chunk_streams(int sfd) {
 			if (first_two_bits == 0) {
 				chunk_msg_header_0_t zero;
 				get_msg_header(sfd, 0, &zero);
-				MSG_LENGTH = get_size(zero.msg_length);
+				MSG_LENGTH = get_message_length(zero.msg_length);
 				if (bytes_received != 0) {
 					printf("1.not zero before reading in new MSG length\n");
 					exit(EXIT_FAILURE);
 				}
 				MSG_TYPEID = zero.msg_typeid;
 				MSG_STREAM_ID = zero.msg_streamid;
-				// frees up any heap memory we used before
-				free(payload);
+				// freeing payload because the msg length might be different
+				if (payload != NULL) {
+					free(payload);
+				}
 				// initialize payload to new msg length
-				payload = (char*)malloc((size_t)MSG_LENGTH);
+				payload = (unsigned char *)malloc((size_t)MSG_LENGTH);
 				
-				int timestamp = (zero.timestamp[0] << 16) | (zero.timestamp[1] << 8) | (zero.timestamp[2]);
+				timestamp = (zero.timestamp[0] << 16) | (zero.timestamp[1] << 8) | (zero.timestamp[2]);
 				if (timestamp == 16777215) {
-					printf("extended timestamp needs to be implemented\n");
-					exit(EXIT_FAILURE);
+					printf("0. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
 				}
 			}
 			// message header type 1
 			else if (first_two_bits == 1) {
 				chunk_msg_header_1_t one;
 				get_msg_header(sfd, 1, &one);
-				MSG_LENGTH = get_size(one.msg_length);
+				MSG_LENGTH = get_message_length(one.msg_length);
 				if (bytes_received != 0) {
 					printf("2.not zero before reading in new MSG length\n");
 					exit(EXIT_FAILURE);
 				}
 				MSG_TYPEID = one.msg_typeid;
-				// frees up any heap memory we used before
-				free(payload);
+				// freeing payload because the msg length might be different
+				if (payload != NULL) {
+					free(payload);
+				}
 				// initialize payload to new msg length
-				payload = (char*)malloc((size_t)MSG_LENGTH);
+				payload = (unsigned char *)malloc((size_t)MSG_LENGTH);
 
-				int timestamp = (one.timestamp_delta[0] << 16) | (one.timestamp_delta[1] << 8) | (one.timestamp_delta[2]);
-				if (timestamp == 16777215) {
-					printf("extended timestamp needs to be implemented\n");
-					exit(EXIT_FAILURE);
+				timestamp_delta = (one.timestamp_delta[0] << 16) | (one.timestamp_delta[1] << 8) | (one.timestamp_delta[2]);
+				if (timestamp_delta == 16777215) {
+					printf("1. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp_delta = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
 				}
 			}
 			// message header type 2
@@ -568,15 +610,16 @@ void parse_chunk_streams(int sfd) {
 				chunk_msg_header_2_t two;
 				get_msg_header(sfd, 2, &two);
 
-				int timestamp = (two.timestamp_delta[0] << 16) | (two.timestamp_delta[1] << 8) | (two.timestamp_delta[2]);
-				if (timestamp == 16777215) {
-					printf("extended timestamp needs to be implemented\n");
-					exit(EXIT_FAILURE);
+				timestamp_delta = (two.timestamp_delta[0] << 16) | (two.timestamp_delta[1] << 8) | (two.timestamp_delta[2]);
+				if (timestamp_delta == 16777215) {
+					printf("2. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp_delta = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
 				}
 			}
 			// message header type 3
 			// we don't need to do anything if it is a type 3 message header, just use previous numbers/sizes
-			// -- what about the extended timestamp?
 
 			int difference = MSG_LENGTH - bytes_received;
 			// NOTE: comparing signed vs unsigned converts the signed value to unsigned which causes unseen bugs
@@ -598,7 +641,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else {
 				if (difference < 0) {
-					printf("msg length minus bytes received is less than zero. error, msg length: %i\n", MSG_LENGTH);
+					printf("msg length minus bytes received is less than zero. error, msg length: %i, difference: %i\n", MSG_LENGTH, difference);
 					exit(EXIT_FAILURE);
 				}
 				int old_bytes_received = bytes_received;
@@ -618,6 +661,7 @@ void parse_chunk_streams(int sfd) {
 		}
 		// bytes received serves as the index in our payload buffer, but if it equals MSG_LENGTH, that means that the index is out of bounds for our buffer
 		// which also means that the payload has been filled
+		timestamp += timestamp_delta;
 		if (bytes_received == MSG_LENGTH) {
 			if (MSG_TYPEID == 20) {
 				printf("parsing command msg...\n");
@@ -666,7 +710,8 @@ void parse_chunk_streams(int sfd) {
 				parse_audio_msg(sfd, payload, MSG_LENGTH);
 			}
 			else if (MSG_TYPEID == 9) {
-				parse_video_msg(sfd, payload, MSG_LENGTH, &sample_count, samples, &file_number);
+				output_video_msg_to_file(payload, MSG_LENGTH, file_number_temp++);
+				parse_video_msg(payload, MSG_LENGTH, &samples_capacity, &sample_count, &samples, &file_number, &current_time, &composition_time_offset_sum, &first_composition_time_offset);
 				//printf("video\n");
 			}
 			else if (MSG_TYPEID == 18) {
