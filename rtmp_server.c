@@ -376,18 +376,21 @@ void output_video_msg_to_file(unsigned char payload[], int size, int file_number
 // We are going to use an int array of 150 samples per mp4 fragment
 void parse_video_msg(
 		unsigned char payload[], 
-		int size, int *samples_capacity_ptr, 
+		int size, 
+		int *samples_capacity_ptr, 
 		int *sample_count_ptr, 
 		SampleData **samples, 
 		int *file_number, 
 		unsigned int *current_time, 
 		int *composition_time_offset_sum, 
-		int *first_composition_time_offset
+		int *first_composition_time_offset,
+		int *saved_sum_ptr
 		) {
 
 	int frametype = (payload[0] >> 4) & 255;
 	int codecID = (payload[0] & 15);
 	int avc_packet_type = payload[1];
+	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
 
 	// avc packet type == 0 means the payload type is going to be an AVC sequence header meaning we get SPS and PPS
 	// 1 means the payload type is an NAL U which could include multiple NAL Units
@@ -397,91 +400,35 @@ void parse_video_msg(
 		write_playlist();
 	}
 	else if (avc_packet_type == 1) {
-		unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
 		SampleData sample;
-		sample.sample_size = 0;
-		sample.composition_time = 0;
-		sample.flags = 0;
-		sample.data = NULL;
-		// WE GOT TO DO THIS FOR EVERY SAMPLE IN THE PAYLOAD
-		for (int byte = 5; byte < size;) {
-			int nal_unit_size = (payload[byte] << 24) | (payload[byte+1] << 16) | (payload[byte+2] << 8) | payload[byte+3];
-			char nal_unit_header = payload[byte+4];
-			char nal_ref_idc = (nal_unit_header >> 5) & 3;
-			char nal_unit_type = nal_unit_header & 31;
-
-			// TODO: Let's rewrite this later. Freeing and malloc'ing probably is not best for performance
-			// NOTE: trying to free a pointer that doesn't point to any memory location will result in a segmentation fault, 
-			// probably because the pointer tries to free memory that hasn't been allocated
-			char *saved = NULL;
-			if (sample.data != NULL) {
-				saved = (unsigned char *)malloc(sample.sample_size);
-				for (int t = 0; t < sample.sample_size; t++) {
-					saved[t] = sample.data[t];
-				}
-				free(sample.data);
-			}
-
-			sample.sample_size += nal_unit_size + 4;
-			sample.data = (unsigned char *)malloc(sample.sample_size);
-
-			int sample_index = 0;
-			int previous_sample_size = sample.sample_size - nal_unit_size - 4;
-			for (; sample_index < previous_sample_size && saved != NULL; sample_index++) {
-				sample.data[sample_index] = saved[sample_index];
-			}
-			if (sample_index > 0 && saved != NULL) {
-				free(saved);
-			}
-			int current_sample_data = 0;
-			for (; sample_index < sample.sample_size; sample_index++) {
-				sample.data[sample_index] = payload[byte+current_sample_data];
-				current_sample_data++;
-			}
-
-			if (current_sample_data != nal_unit_size + 4) {
-				printf("not equal to nal_unit_size; current_sample_data: %i, nal_unit_size: %i\n", current_sample_data, nal_unit_size);
-				exit(EXIT_FAILURE);
-			}
-
-			sample.composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | composition_time[2];
-
-			*composition_time_offset_sum += sample.composition_time;
-
-			if (nal_unit_type < 6 || nal_unit_type > 18) {
-				add_sample_data(samples, samples_capacity_ptr, sample_count_ptr, sample);
-				sample.sample_size = 0;
-				sample.composition_time = 0;
-				sample.flags = 0;
-				// not freeing sample.data because if I free it, the data stored in the buffer will also be freed
-				sample.data = NULL;
-			}
-			
-			if ((get_current_time() - *current_time) % INTERVAL == 0 && get_current_time() != *current_time && *samples_capacity_ptr > 0 && *samples != NULL) {
-				(*file_number)++;
-				printf("creating the segment...\n");
-				write_segment(*samples, (*file_number), (*sample_count_ptr), *first_composition_time_offset + (*samples)[0].composition_time, *composition_time_offset_sum);
-				append_playlist((*file_number));
-				printf("done with creating segment and updating the index playlist...\n");
-				// after we make a new mp4 fragment, we want to free the buffer and reset
-				free(*samples);
-				*samples = NULL;
-				(*sample_count_ptr) = 0;
-				(*samples_capacity_ptr) = 0;
-				*current_time = get_current_time();
-				*first_composition_time_offset = *composition_time_offset_sum;
-				*composition_time_offset_sum = 0;
-			}
-			// plus four because of nal unit size bytes
-			byte += nal_unit_size + 4;
+		sample.sample_size = size - 5;
+		sample.data = (unsigned char *)malloc(size - 5);
+		for (int i = 0; i < size - 5; i++) {
+			sample.data[i] = payload[i+5];
 		}
-		
-		//char fname[50000];
-		//sprintf(fname, "sequence%i", *file_number);
-		//(*file_number)++;
-		//FILE* file = fopen(fname, "w");
-		//fwrite(payload, size, 1, file);
-		//fclose(file);
+		sample.flags = 0;
+		sample.composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | (composition_time[2]);
+		*composition_time_offset_sum += sample.composition_time;
+		add_sample_data(samples, samples_capacity_ptr, sample_count_ptr, sample);
+		if ((get_current_time() - *current_time) % INTERVAL == 0 && get_current_time() != *current_time && *sample_count_ptr > 0 && *samples != NULL) {
+			(*file_number)++;
+			printf("creating segment...\n");
+			// passing in samples but each index in the sample memory buffer could contain multiple samples (ex: seekable frames; frames and sample are interchangeable I guess)
+			write_segment(*samples, *sample_count_ptr, *file_number, *first_composition_time_offset + (*samples[0]).composition_time, *composition_time_offset_sum, *saved_sum_ptr);
+			append_playlist(*file_number);
+			printf("done\n");
+			// after we make a new mp4 fragment, we want to free the buffer and reset
+			free(*samples);
+			*samples = NULL;
+			*sample_count_ptr = 0;
+			*samples_capacity_ptr = 0;
+			*current_time = get_current_time();
+			*first_composition_time_offset = *composition_time_offset_sum;
+			*saved_sum_ptr += *composition_time_offset_sum;
+			*composition_time_offset_sum = 0;
+		}
+		// setting it to NULL and not freeing it because the previous sample.data will also be freed
+		sample.data = NULL;
 	}
 	else if (avc_packet_type == 2) {
 		printf("end of sequence\n");
@@ -491,7 +438,7 @@ void parse_video_msg(
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
 	// do something with metadata or user data
-	FILE* meta = fopen("metadata.txt", "w");
+	FILE *meta = fopen("metadata.txt", "w");
 	fwrite(payload, size, 1, meta);
 	fclose(meta);
 }
@@ -522,6 +469,7 @@ void parse_chunk_streams(int sfd) {
 	unsigned int current_time = get_current_time();
 	int composition_time_offset_sum = 0;
 	int first_composition_time_offset = 0;
+	int saved_sum = 0;
 
 	// TODO: remove later!
 	int file_number_temp = 0;
@@ -711,7 +659,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			else if (MSG_TYPEID == 9) {
 				output_video_msg_to_file(payload, MSG_LENGTH, file_number_temp++);
-				parse_video_msg(payload, MSG_LENGTH, &samples_capacity, &sample_count, &samples, &file_number, &current_time, &composition_time_offset_sum, &first_composition_time_offset);
+				parse_video_msg(payload, MSG_LENGTH, &samples_capacity, &sample_count, &samples, &file_number, &current_time, &composition_time_offset_sum, &first_composition_time_offset, &saved_sum);
 				//printf("video\n");
 			}
 			else if (MSG_TYPEID == 18) {

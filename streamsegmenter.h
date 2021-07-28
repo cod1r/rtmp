@@ -37,6 +37,6 @@ Box write_tkhd();
 Box write_trak();
 Box write_mvhd();
 Box write_moov(unsigned char*, int);
-void write_segment(SampleData[], int, int, int, int);
+void write_segment(SampleData[], int, int, int, int, int);
 void write_playlist();
 void append_playlist(int);

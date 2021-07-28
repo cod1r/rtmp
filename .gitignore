@@ -11,3 +11,4 @@ test*
 *.out
 *.exe
 **/output/
+new_segmented_original/

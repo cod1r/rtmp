@@ -848,7 +848,7 @@ Box write_sidx(int ept, int referenced_size, int composition_time_offset_sum /* 
 	return sidx;
 }
 
-Box write_trun(SampleData samples[], int num_samples) {
+Box write_trun(SampleData samples[], int samples_size) {
 	/*
 	 * Flags:
 	 * 		sample size (each sample has its own size)
@@ -858,13 +858,45 @@ Box write_trun(SampleData samples[], int num_samples) {
 	 */
 	Box trun;
 	trun.name = "trun";
-
+	int num_samples = 0;
 	unsigned int version_and_flags = htonl(0 + 512 + 1024 + 2048 + 1);
+	for (int i = 0; i < samples_size; i++) {
+		int byte = 0;
+		while (byte < samples[i].sample_size) {
+			int nal_unit_size = (samples[i].data[byte] << 24) | (samples[i].data[byte+1] << 16) | (samples[i].data[byte+2] << 8) | (samples[i].data[byte+3]);
+			int nal_unit_type = samples[i].data[byte+4] & 31;
+			if (nal_unit_type < 6 || nal_unit_type > 18) {
+				num_samples ++;
+			}
+			byte += nal_unit_size + 4;
+		}
+
+	}
+	SampleData partitioned_samples[num_samples];
+	for (int i = 0; i < num_samples; i++) {
+		partitioned_samples[i].sample_size = 0;
+		partitioned_samples[i].composition_time = 0;
+		partitioned_samples[i].flags = 0;
+	}
+	int partition_index = 0;
+	for (int i = 0; i < samples_size; i++) {
+		int byte = 0;
+		while (byte < samples[i].sample_size) {
+			int nal_unit_size = (samples[i].data[byte] << 24) | (samples[i].data[byte+1] << 16) | (samples[i].data[byte+2] << 8) | (samples[i].data[byte+3]);
+			int nal_unit_type = samples[i].data[byte+4] & 31;
+			partitioned_samples[partition_index].sample_size += nal_unit_size + 4;
+			partitioned_samples[partition_index].composition_time = samples[i].composition_time;
+			if (nal_unit_type < 6 || nal_unit_type > 18) {
+				partition_index++;
+			}
+			byte += nal_unit_size + 4;
+		}
+	}
 	unsigned int big_endian_sample_count = htonl(num_samples);
 	// adding constants to the data offset which includes atoms above the 'trun' atom
 	unsigned int data_offset = htonl(
 									// each sample has 12 bytes and we add 8 because of the 'mdat' string and the mdat size bytes
-									12*num_samples + 8 +
+									12* num_samples + 8 +
 									strlen("moof") + 4 +
 									strlen("mfhd") + 4 + 4 + 4 +
 									strlen("traf") + 4 + 
@@ -877,7 +909,7 @@ Box write_trun(SampleData samples[], int num_samples) {
 		sizeof(version_and_flags) +
 		sizeof(big_endian_sample_count) +
 		sizeof(data_offset) +
-		12*num_samples + 4 + 4;
+		12* num_samples + 4 + 4;
 
 	trun.size = htonl(trun_size);
 	trun.data = (unsigned char*)malloc(trun_size);
@@ -890,18 +922,18 @@ Box write_trun(SampleData samples[], int num_samples) {
 	insert_integer(trun.data, 12, big_endian_sample_count);
 	insert_integer(trun.data, 16, data_offset);
 	for (int i = 0; i < num_samples; i++) {
-		insert_integer(trun.data, 20+(i*12), htonl(samples[i].sample_size));
-		insert_integer(trun.data, 24+(i*12), htonl(samples[i].flags));
-		insert_integer(trun.data, 28+(i*12), htonl(samples[i].composition_time));
+		insert_integer(trun.data, 20+(i*12), htonl(partitioned_samples[i].sample_size));
+		insert_integer(trun.data, 24+(i*12), htonl(partitioned_samples[i].flags));
+		insert_integer(trun.data, 28+(i*12), htonl(partitioned_samples[i].composition_time));
 	}
 	return trun;
 }
 
-Box write_tfdt() {
+Box write_tfdt(int decode_time) {
 	Box tfdt;
 	tfdt.name = "tfdt";
 	unsigned int version_and_flags = htonl(0);
-	unsigned int baseMediaDecodeTime_1 = htonl(0);
+	unsigned int baseMediaDecodeTime_1 = htonl(decode_time);
 
 	int tfdt_size = 
 		sizeof(version_and_flags) + 
@@ -957,17 +989,17 @@ Box write_tfhd() {
 	return tfhd;
 }
 
-Box write_traf(SampleData samples[], int num_samples) {
+Box write_traf(SampleData samples[], int samples_size, int decode_time) {
 	Box traf;
 	traf.name = "traf";
 
 	Box tfhd = write_tfhd();
 	int tfhd_size = ntohl(tfhd.size);
 
-	Box tfdt = write_tfdt();
+	Box tfdt = write_tfdt(decode_time);
 	int tfdt_size = ntohl(tfdt.size);
 
-	Box trun = write_trun(samples, num_samples);
+	Box trun = write_trun(samples, samples_size);
 	int trun_size = ntohl(trun.size);
 	
 	int traf_size = tfhd_size + tfdt_size + trun_size + 4 + 4;
@@ -1004,14 +1036,14 @@ Box write_mfhd(int file_number /* <- sequence_number */) {
 	return mfhd;
 }
 
-Box write_moof(SampleData samples[], int num_samples, int file_number) {
+Box write_moof(SampleData samples[], int samples_size, int file_number, int decode_time) {
 	Box moof;
 	moof.name = "moof";
 
 	Box mfhd = write_mfhd(file_number);
 	int mfhd_size = ntohl(mfhd.size);
 
-	Box traf = write_traf(samples, num_samples);
+	Box traf = write_traf(samples, samples_size, decode_time);
 	int traf_size = ntohl(traf.size);
 
 	int moof_size = mfhd_size + traf_size + 4 + 4;
@@ -1048,18 +1080,18 @@ Box write_mdat(unsigned char* data, int size) {
 }
 // This function creates an MP4 Fragment/Segment
 // NOTE: ept means earliest presentation time
-void write_segment(SampleData *samples, int number, int num_samples, int ept, int composition_time_offset_sum) {
+void write_segment(SampleData *samples, int samples_size, int file_number, int ept, int composition_time_offset_sum, int decode_time) {
 	char file_name[50000];
-	sprintf(file_name, "sequence%i.mp4", number);
+	sprintf(file_name, "sequence%i.mp4", file_number);
 	FILE *segment_file = fopen(file_name, "w");
 
 	unsigned int summed_size = 0;
-	for (int i = 0; i < num_samples; i++) {
+	for (int i = 0; i < samples_size; i++) {
 		summed_size += samples[i].sample_size;
 	}
 	unsigned char* data = (unsigned char*)malloc(summed_size);
 	int data_index = 0;
-	for (int i = 0; i < num_samples; i++) {
+	for (int i = 0; i < samples_size; i++) {
 		for (int j = data_index; j < samples[i].sample_size + data_index; j++) {
 			data[j] = samples[i].data[j-data_index];
 		}
@@ -1067,7 +1099,7 @@ void write_segment(SampleData *samples, int number, int num_samples, int ept, in
 	}
 
 	//Box styp = write_styp();
-	Box moof = write_moof(samples, num_samples, number);
+	Box moof = write_moof(samples, samples_size, file_number, decode_time);
 	Box mdat = write_mdat(data, summed_size);
 	Box sidx = write_sidx(ept, ntohl(moof.size) + ntohl(mdat.size), composition_time_offset_sum);
 
