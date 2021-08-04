@@ -1134,7 +1134,7 @@ void write_playlist() {
 
 void append_playlist(int file_number) {
 	char seq[5000];
-	sprintf(seq, "#EXTINF:%i.000000,\nsequence%i.mp4\n", INTERVAL/1000, file_number);
+	sprintf(seq, "#EXTINF:%i.000000,\nsequence%i.mp4\n#EXT-X-DISCONTINUITY\n", INTERVAL/1000, file_number);
 	FILE* playlist_file = fopen("index.m3u8", "a");
 	fwrite(seq, strlen(seq), 1, playlist_file);
 	fclose(playlist_file);
