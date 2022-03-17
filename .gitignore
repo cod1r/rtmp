@@ -1,0 +1,14 @@
+*.mp4
+*.txt
+*.flv
+*.py
+testruns/
+*.html
+*.js
+segmented/
+segmented_original/
+test*
+*.out
+*.exe
+**/output/
+new_segmented_original/

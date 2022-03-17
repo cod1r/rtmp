@@ -35,11 +35,42 @@ void prepare_time(unsigned char timestamp[]) {
 	timestamp[0] = t >> 16;
 }
 // for big endian
-unsigned int get_size(unsigned char msg_length[]) {
+int get_message_length(unsigned char msg_length[]) {
 	return msg_length[0]*(1 << 16) + msg_length[1]*(1 << 8) + msg_length[2];
 }
 
-void get_msg_header(int sfd, int type, void* container) {
+ssize_t receive(int sfd, unsigned char buffer[], int size) {
+	int byte_count = 0;
+	while (byte_count < size) {
+		ssize_t current_num_bytes_received = recv(sfd, buffer+byte_count, size-byte_count, 0);
+		byte_count += current_num_bytes_received;
+	}
+	return (ssize_t)byte_count;
+}
+
+void add_sample_data(SampleData **samples, int *samples_capacity_ptr, int *sample_count_ptr, SampleData sample) {
+	if (*samples != NULL && *samples_capacity_ptr > 0 && *sample_count_ptr == *samples_capacity_ptr) {
+		SampleData *samples_copy = (SampleData *)malloc(sizeof(SampleData) * (*sample_count_ptr));
+		for (int i = 0; i < *sample_count_ptr; i++) {
+			samples_copy[i] = (*samples)[i];
+		}
+		free(*samples);
+		(*samples_capacity_ptr) *= 2;
+		(*samples) = (SampleData *)malloc(sizeof(SampleData) * (*samples_capacity_ptr));
+		for (int i = 0; i < *sample_count_ptr; i++) {
+			(*samples)[i] = samples_copy[i];
+		}
+		free(samples_copy);
+	}
+	else if (*samples == NULL && *samples_capacity_ptr == 0) {
+		(*samples_capacity_ptr) = 1;
+		(*samples) = (SampleData *)malloc(sizeof(SampleData) * (*samples_capacity_ptr));
+	}
+	(*samples)[*sample_count_ptr] = sample;
+	(*sample_count_ptr)++;
+}
+
+void get_msg_header(int sfd, int type, void *container) {
 	switch (type) {
 		case 0: {
 			chunk_msg_header_0_t* c = (chunk_msg_header_0_t*)container;
@@ -223,6 +254,7 @@ void onPublish(int sfd, unsigned char tid[8]) {
 	send(sfd, &two_zeroes, 2, 0);
 	send(sfd, &objend, 1, 0);
 }
+
 void parse_command_msg(int sfd, unsigned int cs_id, unsigned char payload[], int size, unsigned int window_acknowledgement_size) {
 	// looping through the bytes that we get
 	// these are amf encoded
@@ -302,8 +334,9 @@ void parse_command_msg(int sfd, unsigned int cs_id, unsigned char payload[], int
 }
 // remember to put this back to system order (in our case it would be little endian)
 // -- we don't need to because it just the value being calculated
-void parse_set_chunk_size(unsigned char payload[], int size, unsigned int* MAX_CHUNK_SIZE) {
+void parse_set_chunk_size(unsigned char payload[], int size, int* MAX_CHUNK_SIZE) {
 	*(MAX_CHUNK_SIZE) = payload[0]*(1 << 24) + payload[1]*(1 << 16) + payload[2]*(1 << 8) + payload[3];
+	printf("new chunk size: %i\n", *(MAX_CHUNK_SIZE));
 }
 
 void parse_abort_msg() {
@@ -327,56 +360,128 @@ void parse_usr_msg() {
 }
 
 void parse_audio_msg(int sfd, unsigned char payload[], int size) {
+	// gotta worry about audio sooner or later
 }
 
-void parse_video_msg(int sfd, unsigned char payload[], int size, unsigned int file_number) {
+void output_video_msg_to_file(unsigned char payload[], int size, int file_number) {
+	char num[5000];
+	sprintf(num, "output/sequence%i.mp4", file_number);
+	FILE *output = fopen(num, "w");
+	fwrite(payload, size, 1, output);
+	fclose(output);
+}
+// Change of plans...we aren't making a new segment every time a new keyframe pops up. We can creating a new segment every 150 samples. There might be some other factors in determining how many samples per mp4
+// fragment but we are running low on time.
+// We are going to have to know which NAL Units are combined together into a sample somehow (maybe 2d array of pointers?)
+// We are going to use an int array of 150 samples per mp4 fragment
+void parse_video_msg(
+		unsigned char payload[], 
+		int size, 
+		int *samples_capacity_ptr, 
+		int *sample_count_ptr, 
+		SampleData **samples, 
+		int *file_number, 
+		unsigned int *current_time, 
+		int *composition_time_offset_sum, 
+		int *first_composition_time_offset,
+		int *saved_sum_ptr
+		) {
+
 	int frametype = (payload[0] >> 4) & 255;
-	int codecID = (payload[0] & 255);
+	int codecID = (payload[0] & 15);
 	int avc_packet_type = payload[1];
 	unsigned char composition_time[3] = {payload[2], payload[3], payload[4]};
+
+	// avc packet type == 0 means the payload type is going to be an AVC sequence header meaning we get SPS and PPS
+	// 1 means the payload type is an NAL U which could include multiple NAL Units
+	// 2 means AVC end of sequence
 	if (avc_packet_type == 0) {
-		write_init(&(payload[5]), size-5);
+		write_init(payload + 5, size - 5);
+		write_playlist();
 	}
-	else {
-		// implement write_segment in streamsegmenter.c
-		// write_segment(&(payload[5]), size-5);
+	else if (avc_packet_type == 1) {
+		SampleData sample;
+		sample.sample_size = size - 5;
+		sample.data = (unsigned char *)malloc(size - 5);
+		for (int i = 0; i < size - 5; i++) {
+			sample.data[i] = payload[i+5];
+		}
+		sample.flags = 0;
+		sample.composition_time = (composition_time[0] << 16) | (composition_time[1] << 8) | (composition_time[2]);
+		*composition_time_offset_sum += sample.composition_time;
+		add_sample_data(samples, samples_capacity_ptr, sample_count_ptr, sample);
+		if ((get_current_time() - *current_time) % INTERVAL == 0 && get_current_time() != *current_time && *sample_count_ptr > 0 && *samples != NULL) {
+			(*file_number)++;
+			printf("creating segment...\n");
+			// passing in samples but each index in the sample memory buffer could contain multiple samples (ex: seekable frames; frames and sample are interchangeable I guess)
+			write_segment(*samples, *sample_count_ptr, *file_number, *first_composition_time_offset + (*samples[0]).composition_time, *composition_time_offset_sum, *saved_sum_ptr);
+			append_playlist(*file_number);
+			printf("done\n");
+			// after we make a new mp4 fragment, we want to free the buffer and reset
+			free(*samples);
+			*samples = NULL;
+			*sample_count_ptr = 0;
+			*samples_capacity_ptr = 0;
+			*current_time = get_current_time();
+			*first_composition_time_offset = *composition_time_offset_sum;
+			*saved_sum_ptr += *composition_time_offset_sum;
+			*composition_time_offset_sum = 0;
+		}
+		// setting it to NULL and not freeing it because the previous sample.data will also be freed
+		sample.data = NULL;
 	}
+	else if (avc_packet_type == 2) {
+		printf("end of sequence\n");
+	}
+
 }
 
 void parse_data_msg(int sfd, unsigned char payload[], int size) {
-	FILE* fp = fopen("metadata.txt", "a");
-	for (int i = 0; i < size; ++i) {
-		char str[50];
-		sprintf(str, "%i\n", payload[i]);
-		fputs(str, fp);
-	}
+	// do something with metadata or user data
+	FILE *meta = fopen("metadata.txt", "w");
+	fwrite(payload, size, 1, meta);
+	fclose(meta);
 }
 
-
+// This function should probably be in streamsegmenter
+// TODO: implement code to get "extended timestamp"
 void parse_chunk_streams(int sfd) {
 	// using longs because I don't know big message lengths can get
 	// -- changed to ints because I am going to assume message lengths won't exceed 3 bytes
-	unsigned int MAX_CHUNK_SIZE = 128;
-	unsigned int bytes_received = 0;
+	int MAX_CHUNK_SIZE = 128;
+	int bytes_received = 0;
 	// msg length is only three bytes which means the max message length is 2^24-1
-	unsigned int MSG_LENGTH = 0;
+	int MSG_LENGTH = 0;
 	// this will be our payload buffer
 	// WE ONLY RESET PAYLOAD IF SIZE CHANGES, OTHERWISE WE ONLY HAVE TO RESET THE INDEX TO WHERE WE START INSERTING DATA; I AM ASSUMING THAT WORKS
-	// THE RECV() FUNCTION WILL START INSERTING DATA INTO THE PAYLOAD AT THE SPECIFIED INDEX (BYTES_RECEIVED) AND OVERWRITE ANY BYTES THAT WAS THERE.
+	// THE RECV() FUNCTION WILL START INSERTING DATA INTO THE PAYLOAD AT THE SPECIFIED INDEX (BYTES_RECEIVED) AND OVERWRITE ANY BYTES THAT WERE THERE.
 	unsigned char* payload = NULL;
 	unsigned char MSG_TYPEID = 0;
-	unsigned int CS_ID = 0;
-	unsigned int WINDOW_ACKNOWLEDGEMENT_SIZE = 2e9;
-	unsigned int TOTAL_BYTES = 0;
-	unsigned int video_bytes = 0;
-	unsigned int file_number = 0;
+	int CS_ID = 0;
+	int MSG_STREAM_ID = 0;
+	int WINDOW_ACKNOWLEDGEMENT_SIZE = 2e9;
+	int file_number = 0;
+	int timestamp = 0;
+	int timestamp_delta = 0;
+	SampleData *samples = NULL;
+	int samples_capacity = 0;
+	int sample_count = 0;
+	unsigned int current_time = get_current_time();
+	int composition_time_offset_sum = 0;
+	int first_composition_time_offset = 0;
+	int saved_sum = 0;
+
+	// TODO: remove later!
+	int file_number_temp = 0;
+
+
 	while (1) {
 		// used to see the first byte
-		unsigned char first = 0;
+		char first = 0;
 		ssize_t _1 = recv(sfd, &first, 1, 0);
 		if (_1 > 0) {
 			//printf("FIRST: %i\n", first);
-			unsigned char last_six_bits = first & 63;
+			char last_six_bits = first & 63;
 			CS_ID = last_six_bits;
 			// get entire basic header of chunk
 			if (last_six_bits == 0) {
@@ -392,7 +497,7 @@ void parse_chunk_streams(int sfd) {
 			}
 			// don't need to do anything it if it type 1 basic header
 
-			unsigned char first_two_bits = (first & 192) >> 6;
+			char first_two_bits = (first & 192) >> 6;
 			// get message header of chunk
 			/*
 				Message header type 0 gives us the timestamp, message length, message type, message stream id.
@@ -401,75 +506,120 @@ void parse_chunk_streams(int sfd) {
 			if (first_two_bits == 0) {
 				chunk_msg_header_0_t zero;
 				get_msg_header(sfd, 0, &zero);
-				MSG_LENGTH = get_size(zero.msg_length);
+				MSG_LENGTH = get_message_length(zero.msg_length);
+				if (bytes_received != 0) {
+					printf("1.not zero before reading in new MSG length\n");
+					exit(EXIT_FAILURE);
+				}
 				MSG_TYPEID = zero.msg_typeid;
-				// frees up any heap memory we used before
-				free(payload);
+				MSG_STREAM_ID = zero.msg_streamid;
+				// freeing payload because the msg length might be different
+				if (payload != NULL) {
+					free(payload);
+				}
 				// initialize payload to new msg length
-				payload = (unsigned char*)malloc((size_t)MSG_LENGTH);
+				payload = (unsigned char *)malloc((size_t)MSG_LENGTH);
+				
+				timestamp = (zero.timestamp[0] << 16) | (zero.timestamp[1] << 8) | (zero.timestamp[2]);
+				if (timestamp == 16777215) {
+					printf("0. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
+				}
 			}
 			// message header type 1
 			else if (first_two_bits == 1) {
 				chunk_msg_header_1_t one;
 				get_msg_header(sfd, 1, &one);
-				// maybe?
-				MSG_LENGTH = get_size(one.msg_length);
+				MSG_LENGTH = get_message_length(one.msg_length);
+				if (bytes_received != 0) {
+					printf("2.not zero before reading in new MSG length\n");
+					exit(EXIT_FAILURE);
+				}
 				MSG_TYPEID = one.msg_typeid;
-				// frees up any heap memory we used before
-				free(payload);
+				// freeing payload because the msg length might be different
+				if (payload != NULL) {
+					free(payload);
+				}
 				// initialize payload to new msg length
-				payload = (unsigned char*)malloc((size_t)MSG_LENGTH);
+				payload = (unsigned char *)malloc((size_t)MSG_LENGTH);
+
+				timestamp_delta = (one.timestamp_delta[0] << 16) | (one.timestamp_delta[1] << 8) | (one.timestamp_delta[2]);
+				if (timestamp_delta == 16777215) {
+					printf("1. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp_delta = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
+				}
 			}
 			// message header type 2
 			else if (first_two_bits == 2) {
 				chunk_msg_header_2_t two;
 				get_msg_header(sfd, 2, &two);
+
+				timestamp_delta = (two.timestamp_delta[0] << 16) | (two.timestamp_delta[1] << 8) | (two.timestamp_delta[2]);
+				if (timestamp_delta == 16777215) {
+					printf("2. extended timestamp\n");
+					char extended_timestamp_bytes[4];
+					ssize_t num_bytes_ext_timestamp = receive(sfd, extended_timestamp_bytes, 4);
+					timestamp_delta = (extended_timestamp_bytes[0] << 24) | (extended_timestamp_bytes[1] << 16) | (extended_timestamp_bytes[2] << 8) | (extended_timestamp_bytes[3]);
+				}
 			}
 			// message header type 3
-			// we don't need to do anything if it is a type 3 message header
-			// just grab payload
-			// -- what about the extended timestamp?
+			// we don't need to do anything if it is a type 3 message header, just use previous numbers/sizes
 
-			// get payload and check if MSG_LENGTH-bytes_received or how much we need to grab, is greater than MAX_CHUNK_SIZE
-			if (MSG_LENGTH - bytes_received > MAX_CHUNK_SIZE) {
-				// we grab the MAX_CHUNK_SIZE
-				ssize_t pl_rec_size = recv(sfd, payload+bytes_received, MAX_CHUNK_SIZE, 0);
-				bytes_received += MAX_CHUNK_SIZE;
-			}
-			else {
-				if (MSG_LENGTH - bytes_received == 0) {
-					printf("msg length minus bytes received is zero. error\n");
+			int difference = MSG_LENGTH - bytes_received;
+			// NOTE: comparing signed vs unsigned converts the signed value to unsigned which causes unseen bugs
+			if (difference > MAX_CHUNK_SIZE) {
+				// Error. Sometimes the amount of bytes we actually receive isn't the amount we want.
+				// Ex: payload_rec_size is not equal to MAX_CHUNK_SIZE
+				// according to https://stackoverflow.com/questions/30655002/socket-programming-recv-is-not-receiving-data-correctly, 
+				// you aren't guaranteed to have one read and one send or vice versa
+				// so it looks like I might have to keep reading until I get the desired number of bytes
+				int old_bytes_received = bytes_received;
+				while (bytes_received - old_bytes_received < MAX_CHUNK_SIZE) {
+					ssize_t payload_rec_size = recv(sfd, payload+bytes_received, MAX_CHUNK_SIZE - (bytes_received - old_bytes_received), 0);
+					bytes_received += (int)payload_rec_size;
+				}
+				if (difference < 0 || bytes_received > MSG_LENGTH) {
+					printf("fuck...\n");
 					exit(EXIT_FAILURE);
 				}
-				// we grab the remainder
-				ssize_t pl_rec_size = recv(sfd, payload+bytes_received, MSG_LENGTH - bytes_received, 0);
-				bytes_received += (MSG_LENGTH - bytes_received);
+			}
+			else {
+				if (difference < 0) {
+					printf("msg length minus bytes received is less than zero. error, msg length: %i, difference: %i\n", MSG_LENGTH, difference);
+					exit(EXIT_FAILURE);
+				}
+				int old_bytes_received = bytes_received;
+				while (bytes_received - old_bytes_received < difference) {
+					ssize_t payload_rec_size = recv(sfd, payload+bytes_received, difference - (bytes_received - old_bytes_received), 0);
+					bytes_received += (int)payload_rec_size;
+				}
 			}
 		}
 		else {
 			printf("first byte not read!\n");
-			printf("video bytes: %i\n", video_bytes);
 			exit(EXIT_FAILURE);
 		}
 		if (payload == NULL) {
 			printf("payload pointer is null: %i\n", bytes_received);
 			exit(EXIT_FAILURE);
 		}
-		if (bytes_received > MSG_LENGTH) {
-			printf("bytes_received over msg_length: %i\n", bytes_received);
-			exit(EXIT_FAILURE);
-		}
 		// bytes received serves as the index in our payload buffer, but if it equals MSG_LENGTH, that means that the index is out of bounds for our buffer
 		// which also means that the payload has been filled
+		timestamp += timestamp_delta;
 		if (bytes_received == MSG_LENGTH) {
 			if (MSG_TYPEID == 20) {
 				printf("parsing command msg...\n");
 				parse_command_msg(sfd, CS_ID, payload, MSG_LENGTH, WINDOW_ACKNOWLEDGEMENT_SIZE);
 			}
-			else if (CS_ID == 2 && MSG_TYPEID >= 1 && MSG_TYPEID <= 6) {
+			else if (CS_ID == 2 && MSG_TYPEID >= 1 && MSG_TYPEID <= 6 && MSG_STREAM_ID == 0) {
 				switch (MSG_TYPEID) {
 					case 1: {
 						parse_set_chunk_size(payload, MSG_LENGTH, &MAX_CHUNK_SIZE);
+						printf("changing max chunk size...\n");
 						break;
 					}
 					case 2: {
@@ -508,8 +658,9 @@ void parse_chunk_streams(int sfd) {
 				parse_audio_msg(sfd, payload, MSG_LENGTH);
 			}
 			else if (MSG_TYPEID == 9) {
-				video_bytes += MSG_LENGTH;
-				parse_video_msg(sfd, payload, MSG_LENGTH, file_number++);
+				output_video_msg_to_file(payload, MSG_LENGTH, file_number_temp++);
+				parse_video_msg(payload, MSG_LENGTH, &samples_capacity, &sample_count, &samples, &file_number, &current_time, &composition_time_offset_sum, &first_composition_time_offset, &saved_sum);
+				//printf("video\n");
 			}
 			else if (MSG_TYPEID == 18) {
 				parse_data_msg(sfd, payload, MSG_LENGTH);
@@ -518,13 +669,18 @@ void parse_chunk_streams(int sfd) {
 				printf("you didn't account for msg type: %i, msg length: %i, first: %i\n", MSG_TYPEID, MSG_LENGTH, first);
 				exit(EXIT_FAILURE);
 			}
-			TOTAL_BYTES += bytes_received;
+
 			bytes_received = 0;
+		}
+		else if (bytes_received > MSG_LENGTH) {
+			printf("bruh...\n");
+			exit(EXIT_FAILURE);
 		}
 	}
 }
 
 // handshake doesn't have different endianness considered
+// TODO: free allocated memory
 int handshake(int new_sfd) {
 	/*
 		The handshake begins with the client sending the C0 and C1 chunks.
@@ -541,7 +697,7 @@ int handshake(int new_sfd) {
 	packet_1_t* c1 				= (packet_1_t*)malloc(sizeof(packet_1_t));
 	packet_2_t* c2 				= (packet_2_t*)malloc(sizeof(packet_2_t));
 	// reads from new sfd. recv() is usually used for tcp connections or connection based sockets
-	ssize_t c0_size_version 	= recv(new_sfd, &(c0->version), sizeof(c0->version), 0) != sizeof(c0->version);
+	ssize_t c0_size_version 	= recv(new_sfd, &(c0->version), sizeof(c0->version), 0);
 
 	//printf("c0 version: %u\n", c0->version);
 	
